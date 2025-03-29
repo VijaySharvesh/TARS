@@ -2,6 +2,7 @@ package com.example.tars
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.example.tars.databinding.ActivityRegisterBinding
@@ -25,19 +26,22 @@ class RegisterActivity : AppCompatActivity() {
     }
 
     private fun setupClickListeners() {
-        binding.registerButton.setOnClickListener {
-            val name = binding.nameInput.text.toString()
-            val email = binding.emailInput.text.toString()
-            val password = binding.passwordInput.text.toString()
-            val confirmPassword = binding.confirmPasswordInput.text.toString()
+        binding.apply {
+            registerButton.setOnClickListener {
+                val name = nameInput.text.toString()
+                val email = emailInput.text.toString()
+                val password = passwordInput.text.toString()
+                val confirmPassword = confirmPasswordInput.text.toString()
 
-            if (validateInputs(name, email, password, confirmPassword)) {
-                registerUser(name, email, password)
+                if (validateInputs(name, email, password, confirmPassword)) {
+                    registerUser(name, email, password)
+                }
             }
-        }
 
-        binding.backToLoginButton.setOnClickListener {
-            finish()
+            backToLoginButton.setOnClickListener {
+                startActivity(Intent(this@RegisterActivity, LoginActivity::class.java))
+                finish()
+            }
         }
     }
 
@@ -87,6 +91,7 @@ class RegisterActivity : AppCompatActivity() {
     }
 
     private fun registerUser(name: String, email: String, password: String) {
+        binding.progressBar.visibility = View.VISIBLE
         auth.createUserWithEmailAndPassword(email, password)
             .addOnCompleteListener(this) { task ->
                 if (task.isSuccessful) {
@@ -103,16 +108,19 @@ class RegisterActivity : AppCompatActivity() {
                             .document(user.uid)
                             .set(userData)
                             .addOnSuccessListener {
+                                binding.progressBar.visibility = View.GONE
                                 Toast.makeText(this, "Registration successful", Toast.LENGTH_SHORT).show()
                                 startActivity(Intent(this, MainActivity::class.java))
                                 finish()
                             }
                             .addOnFailureListener { e ->
+                                binding.progressBar.visibility = View.GONE
                                 Toast.makeText(this, "Error saving user data: ${e.message}",
                                     Toast.LENGTH_SHORT).show()
                             }
                     }
                 } else {
+                    binding.progressBar.visibility = View.GONE
                     Toast.makeText(this, "Registration failed: ${task.exception?.message}",
                         Toast.LENGTH_SHORT).show()
                 }

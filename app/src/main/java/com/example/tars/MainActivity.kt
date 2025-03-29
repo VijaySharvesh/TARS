@@ -5,23 +5,43 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognizerIntent
+import android.view.View
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.tars.databinding.ActivityMainBinding
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val PERMISSION_REQUEST_CODE = 123
+    private lateinit var auth: FirebaseAuth
+    private lateinit var db: FirebaseFirestore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        auth = FirebaseAuth.getInstance()
+        db = FirebaseFirestore.getInstance()
+
+        // Set up toolbar
+        setSupportActionBar(binding.toolbar)
+        supportActionBar?.setDisplayShowTitleEnabled(false)
+
+        // Set up sign out button
+        binding.signOutButton.setOnClickListener {
+            signOut()
+        }
+
+        // Load user information
+        loadUserInfo()
 
         setupUI()
         checkPermissions()
@@ -80,6 +100,35 @@ class MainActivity : AppCompatActivity() {
                 if (isActive) R.color.neon_blue else R.color.white
             )
         )
+    }
+
+    private fun loadUserInfo() {
+        val user = auth.currentUser
+        if (user != null) {
+            // Get user data from Firestore
+            db.collection("users").document(user.uid)
+                .get()
+                .addOnSuccessListener { document ->
+                    if (document != null) {
+                        val name = document.getString("name") ?: "User"
+                        binding.userNameText.text = "Hello, $name"
+                        binding.userEmailText.text = user.email
+                    }
+                }
+                .addOnFailureListener { e ->
+                    Toast.makeText(this, "Error loading user data: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+        }
+    }
+
+    private fun signOut() {
+        binding.progressBar.visibility = View.VISIBLE
+        auth.signOut()
+        // Navigate to login activity and clear back stack
+        val intent = Intent(this, LoginActivity::class.java)
+        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        startActivity(intent)
+        finish()
     }
 
     override fun onRequestPermissionsResult(
