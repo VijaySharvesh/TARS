@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.speech.RecognizerIntent
 import android.view.View
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
@@ -14,13 +13,13 @@ import androidx.core.content.ContextCompat
 import com.example.tars.databinding.ActivityMainBinding
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private val PERMISSION_REQUEST_CODE = 123
     private lateinit var auth: FirebaseAuth
     private lateinit var db: FirebaseFirestore
+    private var isServiceRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,58 +47,88 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUI() {
-        binding.startVoiceButton.setOnClickListener {
-            if (checkPermissions()) {
-                startVoiceService()
-            } else {
-                requestPermissions()
+        binding.apply {
+            startVoiceButton.setOnClickListener {
+                if (checkPermissions()) {
+                    startVoiceService()
+                }
             }
-        }
 
-        binding.stopVoiceButton.setOnClickListener {
-            stopVoiceService()
+            stopVoiceButton.setOnClickListener {
+                stopVoiceService()
+            }
         }
     }
 
     private fun checkPermissions(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
+        val permissions = arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.FOREGROUND_SERVICE,
+            Manifest.permission.FOREGROUND_SERVICE_MICROPHONE
+        )
+
+        val missingPermissions = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missingPermissions.toTypedArray(), PERMISSION_REQUEST_CODE)
+            return false
+        }
+
+        return true
     }
 
-    private fun requestPermissions() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.RECORD_AUDIO),
-            PERMISSION_REQUEST_CODE
-        )
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                startVoiceService()
+            } else {
+                Toast.makeText(this, "Permissions required for voice control", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun startVoiceService() {
-        val serviceIntent = Intent(this, VoiceRecognitionService::class.java).apply {
-            action = "START_LISTENING"
+        try {
+            if (!isServiceRunning) {
+                val serviceIntent = Intent(this, VoiceRecognitionService::class.java)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    startService(serviceIntent)
+                }
+                isServiceRunning = true
+                updateStatus(true)
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error starting voice service: ${e.message}", Toast.LENGTH_SHORT).show()
+            isServiceRunning = false
+            updateStatus(false)
         }
-        startService(serviceIntent)
-        updateStatus(true)
     }
 
     private fun stopVoiceService() {
-        val serviceIntent = Intent(this, VoiceRecognitionService::class.java).apply {
-            action = "STOP_LISTENING"
+        try {
+            if (isServiceRunning) {
+                val serviceIntent = Intent(this, VoiceRecognitionService::class.java)
+                stopService(serviceIntent)
+                isServiceRunning = false
+                updateStatus(false)
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error stopping voice service: ${e.message}", Toast.LENGTH_SHORT).show()
         }
-        startService(serviceIntent)
-        updateStatus(false)
     }
 
     private fun updateStatus(isActive: Boolean) {
-        binding.statusText.text = "Voice Control: ${if (isActive) "Active" else "Inactive"}"
-        binding.statusText.setTextColor(
-            ContextCompat.getColor(
-                this,
-                if (isActive) R.color.neon_blue else R.color.white
-            )
-        )
+        binding.statusText.text = if (isActive) "Voice Control: Active" else "Voice Control: Inactive"
+        binding.statusText.setTextColor(getColor(if (isActive) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
     }
 
     private fun loadUserInfo() {
@@ -123,6 +152,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun signOut() {
         binding.progressBar.visibility = View.VISIBLE
+        stopVoiceService() // Stop the service before signing out
         auth.signOut()
         // Navigate to login activity and clear back stack
         val intent = Intent(this, LoginActivity::class.java)
@@ -131,22 +161,15 @@ class MainActivity : AppCompatActivity() {
         finish()
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startVoiceService()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Permission denied. Voice recognition will not work.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+    override fun onResume() {
+        super.onResume()
+        try {
+            // Check if service is running and update UI accordingly
+            isServiceRunning = VoiceRecognitionService.isRunning
+            updateStatus(isServiceRunning)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error checking service status: ${e.message}", Toast.LENGTH_SHORT).show()
+            updateStatus(false)
         }
     }
 }

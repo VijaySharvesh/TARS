@@ -1,112 +1,190 @@
 package com.example.tars
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.media.MediaPlayer
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
-import androidx.lifecycle.LifecycleService
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.launch
+import androidx.core.app.NotificationCompat
 import java.util.Locale
 
-class VoiceRecognitionService : LifecycleService() {
+class VoiceRecognitionService : Service() {
     private var speechRecognizer: SpeechRecognizer? = null
     private var isListening = false
+    private var isActive = false
+    private val handler = Handler(Looper.getMainLooper())
+    private var mediaPlayer: MediaPlayer? = null
+
+    companion object {
+        const val NOTIFICATION_ID = 1
+        const val CHANNEL_ID = "VoiceRecognitionChannel"
+        var isRunning = false
+        private const val KEYWORD = "tarzan"
+    }
 
     override fun onCreate() {
         super.onCreate()
+        createNotificationChannel()
+        startForeground(NOTIFICATION_ID, createNotification())
+        isRunning = true
+        isActive = true
         initializeSpeechRecognizer()
+        initializeMediaPlayer()
+        playBeepSound()
     }
 
-    private fun initializeSpeechRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            Log.e("VoiceRecognition", "Speech recognition is not available on this device")
-            return
+    private fun initializeMediaPlayer() {
+        mediaPlayer = MediaPlayer.create(this, R.raw.beep)?.apply {
+            setOnCompletionListener { it.reset() }
         }
-
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle) {
-                isListening = true
-                Log.d("VoiceRecognition", "Ready for speech")
-            }
-
-            override fun onResults(results: Bundle) {
-                val matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                matches?.get(0)?.let { result ->
-                    processVoiceCommand(result)
-                }
-                isListening = false
-            }
-
-            override fun onError(error: Int) {
-                isListening = false
-                Log.e("VoiceRecognition", "Error: $error")
-            }
-
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-            override fun onPartialResults(partialResults: Bundle) {}
-            override fun onEvent(eventType: Int, params: Bundle) {}
-        })
-    }
-
-    private fun processVoiceCommand(command: String) {
-        when (command.lowercase(Locale.getDefault())) {
-            "volume up" -> adjustVolume(true)
-            "volume down" -> adjustVolume(false)
-            "power off" -> Log.d("VoiceRecognition", "Power off command received")
-            else -> Log.d("VoiceRecognition", "Unknown command: $command")
-        }
-    }
-
-    private fun adjustVolume(increase: Boolean) {
-        val audioManager = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
-        val direction = if (increase) android.media.AudioManager.ADJUST_RAISE else android.media.AudioManager.ADJUST_LOWER
-        audioManager.adjustStreamVolume(
-            android.media.AudioManager.STREAM_MUSIC,
-            direction,
-            android.media.AudioManager.FLAG_SHOW_UI
-        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        super.onStartCommand(intent, flags, startId)
-        when (intent?.action) {
-            "START_LISTENING" -> startListening()
-            "STOP_LISTENING" -> stopListening()
+        if (!isListening) {
+            startListening()
         }
         return START_STICKY
     }
 
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Voice Recognition Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shows when TARS is listening for voice commands"
+            }
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun createNotification(): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("TARS Voice Control")
+            .setContentText("Listening for commands...")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build()
+    }
+
+    private fun initializeSpeechRecognizer() {
+        if (SpeechRecognizer.isRecognitionAvailable(this)) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            speechRecognizer?.setRecognitionListener(createRecognitionListener())
+        }
+    }
+
+    private fun createRecognitionListener() = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            isListening = true
+            Log.d("VoiceService", "Ready for speech")
+            updateNotification("Listening for commands...")
+        }
+
+        override fun onResults(results: Bundle?) {
+            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            if (!matches.isNullOrEmpty()) {
+                val command = matches[0].toLowerCase()
+                Log.d("VoiceService", "Command received: $command")
+                processCommand(command)
+                updateNotification("Command received: $command")
+            }
+            
+            // Always restart listening if we're still running
+            if (isRunning) {
+                handler.postDelayed({
+                    startListening()
+                }, 100)
+            }
+        }
+
+        override fun onError(error: Int) {
+            Log.e("VoiceService", "Error: $error")
+            // Restart listening on any error if we're still running
+            if (isRunning) {
+                handler.postDelayed({
+                    startListening()
+                }, 100)
+            }
+        }
+
+        override fun onBeginningOfSpeech() {
+            Log.d("VoiceService", "Speech started")
+            updateNotification("Speech detected...")
+        }
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {
+            Log.d("VoiceService", "Speech ended")
+            updateNotification("Processing speech...")
+        }
+        override fun onPartialResults(partialResults: Bundle?) {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+    }
+
+    private fun playBeepSound() {
+        mediaPlayer?.start()
+    }
+
     private fun startListening() {
-        if (!isListening) {
+        if (isRunning) {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
             }
             speechRecognizer?.startListening(intent)
         }
     }
 
-    private fun stopListening() {
-        speechRecognizer?.stopListening()
-        isListening = false
+    private fun updateNotification(text: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("TARS Voice Control")
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build()
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
-    override fun onBind(intent: Intent): IBinder? = null
+    private fun processCommand(command: String) {
+        // Process the voice command here
+        Log.d("VoiceService", "Processing command: $command")
+        // Add your command processing logic here
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        super.onDestroy()
+        isRunning = false
+        isListening = false
+        isActive = false
+        handler.removeCallbacksAndMessages(null)
         speechRecognizer?.destroy()
         speechRecognizer = null
+        mediaPlayer?.release()
+        mediaPlayer = null
+        super.onDestroy()
     }
 } 

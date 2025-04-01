@@ -54,7 +54,6 @@
                 android:textColor="@color/neon_blue"
                 android:textSize="48sp"
                 android:textStyle="bold"
-                android:fontFamily="@font/robotic"
                 android:letterSpacing="0.1"
                 android:shadowColor="@color/neon_purple"
                 android:shadowDx="2"
