@@ -12,3 +12,4 @@
 /app/release
 /app/debug
 /app/google-services.json
+app/src/main/assets/config.properties

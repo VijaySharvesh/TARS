@@ -24,6 +24,7 @@ class VoiceRecognitionService : Service() {
     private var isActive = false
     private val handler = Handler(Looper.getMainLooper())
     private var mediaPlayer: MediaPlayer? = null
+    private lateinit var chatBotService: ChatBotService
 
     companion object {
         const val NOTIFICATION_ID = 1
@@ -40,6 +41,7 @@ class VoiceRecognitionService : Service() {
         isActive = true
         initializeSpeechRecognizer()
         initializeMediaPlayer()
+        chatBotService = ChatBotService(this)
         playBeepSound()
     }
 
@@ -100,7 +102,7 @@ class VoiceRecognitionService : Service() {
             if (!matches.isNullOrEmpty()) {
                 val command = matches[0].toLowerCase()
                 Log.d("VoiceService", "Command received: $command")
-                processCommand(command)
+                chatBotService.processCommand(command)
                 updateNotification("Command received: $command")
             }
             
@@ -168,12 +170,6 @@ class VoiceRecognitionService : Service() {
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun processCommand(command: String) {
-        // Process the voice command here
-        Log.d("VoiceService", "Processing command: $command")
-        // Add your command processing logic here
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
@@ -185,6 +181,7 @@ class VoiceRecognitionService : Service() {
         speechRecognizer = null
         mediaPlayer?.release()
         mediaPlayer = null
+        chatBotService.shutdown()
         super.onDestroy()
     }
 } 

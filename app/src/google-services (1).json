@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "629181918601",
+    "firebase_url": "https://tars-va-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "tars-va",
+    "storage_bucket": "tars-va.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:629181918601:android:05c6b136e0cb3e22068558",
+        "android_client_info": {
+          "package_name": "com.example.tars"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "629181918601-s6vjtg6tbbuk803r5oq18eo4lf03njml.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD1w6HYSs1O1xiZipZEQ4iFW5kI17ehaws"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "629181918601-s6vjtg6tbbuk803r5oq18eo4lf03njml.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

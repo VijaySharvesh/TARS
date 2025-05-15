@@ -5,7 +5,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.util.AttributeSet
-import android.util.Log
 import android.view.View
 import kotlin.random.Random
 
@@ -18,79 +17,57 @@ class SpaceBackgroundView @JvmOverloads constructor(
     private val stars = mutableListOf<Star>()
     private val paint = Paint().apply {
         color = Color.WHITE
-        style = Paint.Style.FILL
+        isAntiAlias = true
     }
 
     init {
-        try {
-            // Create initial stars
-            for (i in 0 until 100) {
-                stars.add(createStar())
-            }
-        } catch (e: Exception) {
-            Log.e("SpaceBackground", "Error initializing stars: ${e.message}")
+        // Create initial stars
+        repeat(100) {
+            stars.add(createStar())
         }
     }
 
     private fun createStar(): Star {
-        return try {
-            Star(
-                x = Random.nextFloat() * width,
-                y = Random.nextFloat() * height,
-                size = Random.nextFloat() * 3f,
-                speed = Random.nextFloat() * 2f + 1f
-            )
-        } catch (e: Exception) {
-            Log.e("SpaceBackground", "Error creating star: ${e.message}")
-            Star(0f, 0f, 1f, 1f) // Default star as fallback
-        }
+        return Star(
+            x = Random.nextFloat() * width,
+            y = Random.nextFloat() * height,
+            radius = Random.nextFloat() * 2f + 0.5f,
+            speed = Random.nextFloat() * 2f + 0.5f
+        )
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        try {
-            // Recreate stars when view size changes
-            stars.clear()
-            for (i in 0 until 100) {
-                stars.add(createStar())
-            }
-        } catch (e: Exception) {
-            Log.e("SpaceBackground", "Error in onSizeChanged: ${e.message}")
+        stars.clear()
+        repeat(100) {
+            stars.add(createStar())
         }
     }
 
     override fun onDraw(canvas: Canvas) {
-        try {
-            super.onDraw(canvas)
+        super.onDraw(canvas)
+        
+        // Draw stars
+        stars.forEach { star ->
+            paint.alpha = (star.radius * 100).toInt()
+            canvas.drawCircle(star.x, star.y, star.radius, paint)
             
-            // Draw stars
-            stars.forEach { star ->
-                paint.alpha = (star.size * 85).toInt()
-                canvas.drawCircle(star.x, star.y, star.size, paint)
+            // Update star position
+            star.y += star.speed
+            if (star.y > height) {
+                star.y = 0f
+                star.x = Random.nextFloat() * width
             }
-
-            // Update star positions
-            stars.forEach { star ->
-                star.y += star.speed
-                if (star.y > height) {
-                    star.y = 0f
-                    star.x = Random.nextFloat() * width
-                    star.size = Random.nextFloat() * 3f
-                    star.speed = Random.nextFloat() * 2f + 1f
-                }
-            }
-
-            // Request next frame
-            invalidate()
-        } catch (e: Exception) {
-            Log.e("SpaceBackground", "Error in onDraw: ${e.message}")
         }
+        
+        // Request next frame
+        invalidate()
     }
 
     private data class Star(
         var x: Float,
         var y: Float,
-        var size: Float,
-        var speed: Float
+        val radius: Float,
+        val speed: Float
     )
 } 
