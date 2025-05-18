@@ -1,9 +1,15 @@
 package com.example.tars
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -25,15 +31,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import org.json.JSONArray
 import java.io.IOException
 import java.util.Locale
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 
 class ChatBotActivity : AppCompatActivity() {
     private lateinit var binding: ActivityChatBotBinding
     private lateinit var messageAdapter: MessageAdapter
-    private var speechRecognizer: SpeechRecognizer? = null
     private var textToSpeech: TextToSpeech? = null
     private var isProcessing = false
     private var isListening = false
@@ -43,6 +47,14 @@ class ChatBotActivity : AppCompatActivity() {
     
     private var aiProvider: AIProvider? = null
 
+    private var speechRecognizer: SpeechRecognizer? = null
+
+    private lateinit var phoneControlService: PhoneControlService
+
+    // Add variables to track if user is interacting with the UI
+    private var isUserInteracting = false
+    private val handler = Handler(Looper.getMainLooper())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityChatBotBinding.inflate(layoutInflater)
@@ -51,13 +63,30 @@ class ChatBotActivity : AppCompatActivity() {
         // Initialize Config with API keys
         Config.init(this)
 
+        // Initialize phone control service
+        phoneControlService = PhoneControlService(this)
+
         setupRecyclerView()
-        setupSpeechRecognizer()
         setupTextToSpeech()
+        setupSpeechRecognizer()
         setupClickListeners()
         setupHumorSlider()
         checkPermissions()
+        
+        // Setup AI provider first to ensure welcome message appears
         setupAIProvider()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        textToSpeech?.shutdown()
+        
+        try {
+            speechRecognizer?.destroy()
+            speechRecognizer = null
+        } catch (e: Exception) {
+            Log.e("ChatBotActivity", "Error destroying speech recognizer: ${e.message}")
+        }
     }
 
     private fun setupRecyclerView() {
@@ -65,15 +94,6 @@ class ChatBotActivity : AppCompatActivity() {
         binding.messagesRecyclerView.apply {
             layoutManager = LinearLayoutManager(this@ChatBotActivity)
             adapter = messageAdapter
-        }
-    }
-
-    private fun setupSpeechRecognizer() {
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            speechRecognizer?.setRecognitionListener(createRecognitionListener())
-        } else {
-            Toast.makeText(this, "Speech recognition not available on this device", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -91,6 +111,22 @@ class ChatBotActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupSpeechRecognizer() {
+        try {
+            if (SpeechRecognizer.isRecognitionAvailable(this)) {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+                speechRecognizer?.setRecognitionListener(createRecognitionListener())
+                Log.d("ChatBotActivity", "Speech recognizer initialized successfully")
+            } else {
+                Log.e("ChatBotActivity", "Speech recognition not available on this device")
+                Toast.makeText(this, "Speech recognition not available on this device", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Log.e("ChatBotActivity", "Error initializing speech recognizer: ${e.message}")
+            Toast.makeText(this, "Error initializing speech: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun createRecognitionListener() = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
             isListening = true
@@ -98,68 +134,203 @@ class ChatBotActivity : AppCompatActivity() {
             binding.micButton.setBackgroundResource(R.drawable.mic_button_pressed)
         }
 
+        override fun onBeginningOfSpeech() {
+            Log.d("ChatBotActivity", "Speech started")
+        }
+
+        override fun onRmsChanged(rmsdB: Float) {
+            // Could implement visual feedback based on volume
+        }
+
+        override fun onBufferReceived(buffer: ByteArray?) {
+            // Not needed for basic implementation
+        }
+
+        override fun onEndOfSpeech() {
+            Log.d("ChatBotActivity", "Speech ended")
+            // UI will be updated in onResults or onError
+        }
+
+        override fun onError(error: Int) {
+            val errorMessage = when (error) {
+                SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
+                SpeechRecognizer.ERROR_CLIENT -> "Client side error"
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions"
+                SpeechRecognizer.ERROR_NETWORK -> "Network error"
+                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+                SpeechRecognizer.ERROR_NO_MATCH -> "No speech detected"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognition service busy"
+                SpeechRecognizer.ERROR_SERVER -> "Server error"
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
+                else -> "Unknown error"
+            }
+            
+            Log.e("ChatBotActivity", "Speech recognition error: $errorMessage ($error)")
+            
+            // Only show toast for critical errors
+            if (error != SpeechRecognizer.ERROR_NO_MATCH && 
+                error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                Toast.makeText(this@ChatBotActivity, errorMessage, Toast.LENGTH_SHORT).show()
+            }
+            
+            // Always reset UI state
+            isListening = false
+            binding.statusText.text = "Hold to speak"
+            binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
+        }
+
         override fun onResults(results: Bundle?) {
             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             if (!matches.isNullOrEmpty()) {
                 val spokenText = matches[0]
+                Log.d("ChatBotActivity", "Speech recognized: $spokenText")
                 processUserInput(spokenText)
             }
+            
+            // Always reset UI state
             isListening = false
-            binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
             binding.statusText.text = "Hold to speak"
+            binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
         }
 
-        override fun onError(error: Int) {
-            isListening = false
-            binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
-            binding.statusText.text = "Hold to speak"
-            Toast.makeText(this@ChatBotActivity, "Error: $error", Toast.LENGTH_SHORT).show()
+        override fun onPartialResults(partialResults: Bundle?) {
+            // Not needed for basic implementation
         }
 
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onPartialResults(partialResults: Bundle?) {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
-    }
-
-    private fun setupClickListeners() {
-        binding.micButton.setOnTouchListener { view: android.view.View, event: android.view.MotionEvent ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    startListening()
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    stopListening()
-                    true
-                }
-                else -> false
-            }
+        override fun onEvent(eventType: Int, params: Bundle?) {
+            // Not needed for basic implementation
         }
     }
 
     private fun startListening() {
-        if (checkPermissions() && !isListening) {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.ENGLISH)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        try {
+            if (checkPermissions() && !isListening) {
+                // Always reset UI state first
+                isListening = true
+                binding.statusText.text = "Listening..."
+                binding.micButton.setBackgroundResource(R.drawable.mic_button_pressed)
+                
+                // Check if speech recognizer needs recreation
+                if (speechRecognizer == null) {
+                    setupSpeechRecognizer()
+                }
+                
+                if (speechRecognizer != null) {
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                    }
+                    try {
+                        speechRecognizer?.startListening(intent)
+                        Log.d("ChatBotActivity", "Started listening")
+                    } catch (e: Exception) {
+                        Log.e("ChatBotActivity", "Error with direct speech recognition: ${e.message}")
+                        // Try using system activity as fallback
+                        launchSystemSpeechRecognizer()
+                    }
+                } else {
+                    Log.d("ChatBotActivity", "Speech recognizer not available, using system activity")
+                    // Use the system's speech recognition activity as fallback
+                    launchSystemSpeechRecognizer()
+                }
             }
-            speechRecognizer?.startListening(intent)
+        } catch (e: Exception) {
+            Log.e("ChatBotActivity", "Error starting listening: ${e.message}")
+            isListening = false
+            binding.statusText.text = "Hold to speak"
+            binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
+            Toast.makeText(this, "Failed to start voice recognition", Toast.LENGTH_SHORT).show()
         }
     }
 
+    private fun launchSystemSpeechRecognizer() {
+        try {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak now")
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            }
+            startActivityForResult(intent, SPEECH_REQUEST_CODE)
+        } catch (e: Exception) {
+            Log.e("ChatBotActivity", "Could not start system speech recognition: ${e.message}")
+            isListening = false
+            binding.statusText.text = "Hold to speak"
+            binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
+            Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        
+        when (requestCode) {
+            SPEECH_REQUEST_CODE -> {
+                if (resultCode == RESULT_OK) {
+                    val results = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                    if (!results.isNullOrEmpty()) {
+                        val spokenText = results[0]
+                        processUserInput(spokenText)
+                    }
+                }
+            }
+            
+            WRITE_SETTINGS_REQUEST_CODE -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    if (Settings.System.canWrite(this)) {
+                        Toast.makeText(this, "System settings permission granted", Toast.LENGTH_SHORT).show()
+                        messageAdapter.addMessage(Message(
+                            "System settings permission granted. You can now control brightness and other settings.",
+                            false,
+                            getCurrentTime()
+                        ))
+                        binding.messagesRecyclerView.smoothScrollToPosition(messageAdapter.itemCount - 1)
+                    } else {
+                        Toast.makeText(this, 
+                            "System settings permission denied. Some features like brightness control won't work.", 
+                            Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+        
+        // Always reset UI state after any activity result
+        isListening = false
+        binding.statusText.text = "Hold to speak"
+        binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
+    }
+
     private fun stopListening() {
-        if (isListening) {
+        try {
+            // Always reset UI state first
+            isListening = false
+            binding.statusText.text = "Hold to speak"
+            binding.micButton.setBackgroundResource(R.drawable.mic_button_background)
+            
+            // Then try to stop listening
             speechRecognizer?.stopListening()
+            Log.d("ChatBotActivity", "Stopped listening")
+        } catch (e: Exception) {
+            Log.e("ChatBotActivity", "Error stopping listening: ${e.message}")
+            // UI state already reset above
         }
     }
 
     private fun checkPermissions(): Boolean {
-        val permissions = arrayOf(Manifest.permission.RECORD_AUDIO)
-        val missingPermissions = permissions.filter {
+        val basicPermissions = mutableListOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CALL_PHONE
+        )
+        
+        // Add Bluetooth permissions for Android 12+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            basicPermissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            basicPermissions.add(Manifest.permission.BLUETOOTH_SCAN)
+        }
+        
+        val missingPermissions = basicPermissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
@@ -167,6 +338,20 @@ class ChatBotActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(this, missingPermissions.toTypedArray(), 123)
             return false
         }
+        
+        // Check for system write settings permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.System.canWrite(this)) {
+                Toast.makeText(this, 
+                    "Please grant permission to control system settings like brightness", 
+                    Toast.LENGTH_LONG).show()
+                
+                val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
+                intent.data = Uri.parse("package:$packageName")
+                startActivityForResult(intent, WRITE_SETTINGS_REQUEST_CODE)
+            }
+        }
+        
         return true
     }
 
@@ -176,12 +361,38 @@ class ChatBotActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 123 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            startListening()
+        
+        when (requestCode) {
+            123 -> { // Basic permissions
+                if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                    Toast.makeText(this, "All basic permissions granted", Toast.LENGTH_SHORT).show()
+                    startListening()
+                } else {
+                    Toast.makeText(this, 
+                        "Some permissions were denied. Some features may not work properly.", 
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+            
+            BLUETOOTH_PERMISSION_CODE -> {
+                if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                    Toast.makeText(this, "Bluetooth permissions granted", Toast.LENGTH_SHORT).show()
+                    messageAdapter.addMessage(Message(
+                        "Bluetooth permissions granted. You can now control Bluetooth.",
+                        false,
+                        getCurrentTime()
+                    ))
+                    binding.messagesRecyclerView.smoothScrollToPosition(messageAdapter.itemCount - 1)
+                } else {
+                    Toast.makeText(this, 
+                        "Bluetooth permissions denied. Bluetooth control won't work.", 
+                        Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
-    private fun processUserInput(input: String) {
+    fun processUserInput(input: String) {
         if (isProcessing) return
         isProcessing = true
 
@@ -191,6 +402,16 @@ class ChatBotActivity : AppCompatActivity() {
         // Scroll to bottom
         binding.messagesRecyclerView.post {
             binding.messagesRecyclerView.smoothScrollToPosition(messageAdapter.itemCount - 1)
+        }
+
+        // Check for phone control commands first
+        val phoneControlResponse = handlePhoneControlCommand(input)
+        if (phoneControlResponse != null) {
+            messageAdapter.addMessage(Message(phoneControlResponse, false, getCurrentTime()))
+            binding.messagesRecyclerView.smoothScrollToPosition(messageAdapter.itemCount - 1)
+            speakText(phoneControlResponse)
+            isProcessing = false
+            return
         }
 
         // Check for navigation command
@@ -203,7 +424,7 @@ class ChatBotActivity : AppCompatActivity() {
             return
         }
 
-        // Check for TARS commands first
+        // Check for TARS commands
         val response = handleTarsCommand(input)
         if (response != null) {
             messageAdapter.addMessage(Message(response, false, getCurrentTime()))
@@ -256,6 +477,19 @@ class ChatBotActivity : AppCompatActivity() {
                 isProcessing = false
             }
         }
+
+        // After processing the command, if this activity was opened through the wake word,
+        // we should finish this activity after a short delay
+        if (isProcessing) return
+        isProcessing = true
+        
+        // At the end of your method, after command processing
+        handler.postDelayed({
+            // Finish activity only if it's not being actively used
+            if (!isListening && !isUserInteracting) {
+                finish()
+            }
+        }, 5000) // Wait 5 seconds after command execution before closing
     }
 
     private fun speakText(text: String) {
@@ -266,6 +500,12 @@ class ChatBotActivity : AppCompatActivity() {
         val lowerInput = input.lowercase().trim()
         
         return when {
+            lowerInput == "show commands" || lowerInput == "what commands" || 
+            lowerInput == "help" || lowerInput == "show help" || 
+            lowerInput == "what can you do" -> {
+                getAvailableCommands()
+            }
+            
             lowerInput == "show settings" || lowerInput == "show parameters" || 
             lowerInput == "what are your settings" || lowerInput == "display settings" -> {
                 "Current settings:\n" +
@@ -337,25 +577,63 @@ class ChatBotActivity : AppCompatActivity() {
                 }
             }
             
-            lowerInput == "show commands" || lowerInput == "what are your commands" || 
-            lowerInput == "help" || lowerInput == "show help" -> {
-                """
-                Available TARS commands:
-                1. "Show settings" - Display current settings
-                2. "Set humor/honesty/sarcasm to [0-100]" - Adjust settings
-                3. "Reset settings" - Reset to defaults
-                4. "Tell me a joke" - Get a joke (if humor > 0)
-                5. "Who are you" - Learn about TARS
-                6. "Hello TARS" - Greet TARS
-                7. "Thank you TARS" - Express gratitude
-                8. "Goodbye TARS" - End conversation
-                
-                For any other questions, I'll provide AI-powered responses!
-                """.trimIndent()
-            }
-            
             else -> null
         }
+    }
+
+    private fun getAvailableCommands(): String {
+        return """
+            Available TARS Commands:
+            
+            Volume Controls:
+            - "Volume up" or "Increase volume"
+            - "Volume down" or "Decrease volume"
+            
+            Brightness Controls:
+            - "Brightness up" or "Increase brightness" 
+            - "Brightness down" or "Decrease brightness"
+            
+            WiFi Controls:
+            - "Turn on WiFi" or "Enable WiFi"
+            - "Turn off WiFi" or "Disable WiFi"
+            
+            Bluetooth Controls:
+            - "Turn on Bluetooth" or "Enable Bluetooth"
+            - "Turn off Bluetooth" or "Disable Bluetooth"
+            
+            App Controls:
+            - "Open [app name]" (e.g., "Open Camera", "Open YouTube")
+            - "Launch [app name]"
+            
+            System Navigation:
+            - "Go home" or "Home screen"
+            - "Go back" or "Back"
+            - "Recent apps" or "Show recents"
+            - "Lock screen" or "Lock phone"
+            - "Open notifications" or "Show notifications"
+            - "Open quick settings" or "Show quick settings"
+            - "Split screen" or "Multi window"
+            - "Take screenshot" or "Screen capture"
+            - "Do not disturb" or "Silent mode"
+            - "Power saving" or "Battery saver"
+            - "Flashlight" or "Torch"
+            
+            Settings Navigation:
+            - "Open settings" or "Go to settings"
+            - "Open [setting type] settings" (e.g., "Open Bluetooth settings")
+            
+            Location Navigation:
+            - "Navigate to [location]"
+            - "Directions to [location]"
+            
+            AI Assistant:
+            - "Set humor to [0-100]"
+            - "Set honesty to [0-100]"
+            - "Set sarcasm to [0-100]"
+            - "Tell me a joke"
+            - "Show commands" or "Help"
+            - Ask any question for AI responses
+        """.trimIndent()
     }
 
     private fun extractNumber(input: String): Int {
@@ -364,29 +642,34 @@ class ChatBotActivity : AppCompatActivity() {
     }
 
     private fun setupAIProvider() {
-        val apiKey = Config.getGrokKey()
-        if (apiKey.isNotEmpty()) {
-            aiProvider = GrokProvider(apiKey)
-        } else {
-            startSetupActivity()
-            return
+        try {
+            val apiKey = Config.getGrokKey()
+            if (apiKey.isNotEmpty()) {
+                aiProvider = GrokProvider(apiKey)
+            } else {
+                startSetupActivity()
+                return
+            }
+            
+            // Always show welcome message
+            val humorDescription = when(humorSetting) {
+                0 -> "I'm in strictly professional mode."
+                in 1..20 -> "My humor is set to minimal."
+                in 21..40 -> "I'm slightly humorous today."
+                in 41..60 -> "I have a balanced sense of humor."
+                in 61..80 -> "I'm feeling quite humorous."
+                else -> "I'm at maximum wit and sarcasm."
+            }
+            
+            messageAdapter.addMessage(Message(
+                "Hello, I am TARS. Your personal assistant. My humor setting is currently at $humorSetting%. $humorDescription Feel free to adjust it using the slider above.",
+                false,
+                getCurrentTime()
+            ))
+        } catch (e: Exception) {
+            Log.e("ChatBotActivity", "Error setting up AI provider: ${e.message}")
+            Toast.makeText(this, "Failed to set up AI provider", Toast.LENGTH_SHORT).show()
         }
-        
-        // Add welcome message based on humor setting
-        val humorDescription = when(humorSetting) {
-            0 -> "I'm in strictly professional mode."
-            in 1..20 -> "My humor is set to minimal."
-            in 21..40 -> "I'm slightly humorous today."
-            in 41..60 -> "I have a balanced sense of humor."
-            in 61..80 -> "I'm feeling quite humorous."
-            else -> "I'm at maximum wit and sarcasm."
-        }
-        
-        messageAdapter.addMessage(Message(
-            "Hello, I am TARS. My humor setting is currently at $humorSetting%. $humorDescription Feel free to adjust it using the slider above.",
-            false,
-            getCurrentTime()
-        ))
     }
     
     private fun startSetupActivity() {
@@ -530,11 +813,19 @@ class ChatBotActivity : AppCompatActivity() {
         return null
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        speechRecognizer?.destroy()
-        textToSpeech?.stop()
-        textToSpeech?.shutdown()
+    private fun startVoiceService() {
+        try {
+            val intent = Intent(this, VoiceRecognitionService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Log.d("ChatBotActivity", "Voice service started")
+        } catch (e: Exception) {
+            Log.e("ChatBotActivity", "Error starting voice service: ${e.message}")
+            Toast.makeText(this, "Failed to start voice service", Toast.LENGTH_SHORT).show()
+        }
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -551,5 +842,235 @@ class ChatBotActivity : AppCompatActivity() {
             }
             else -> super.onOptionsItemSelected(item)
         }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupClickListeners() {
+        binding.micButton.setOnTouchListener { view: android.view.View, event: android.view.MotionEvent ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startListening()
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    stopListening()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun handlePhoneControlCommand(input: String): String? {
+        val lowerInput = input.lowercase().trim()
+        
+        return when {
+            // Volume controls
+            lowerInput.contains("volume up") || lowerInput.contains("increase volume") || 
+            lowerInput.contains("turn up volume") || lowerInput.contains("louder") -> {
+                phoneControlService.adjustVolume(true)
+            }
+            
+            lowerInput.contains("volume down") || lowerInput.contains("decrease volume") || 
+            lowerInput.contains("turn down volume") || lowerInput.contains("lower volume") || 
+            lowerInput.contains("quieter") -> {
+                phoneControlService.adjustVolume(false)
+            }
+            
+            // Brightness controls
+            lowerInput.contains("brightness up") || lowerInput.contains("increase brightness") || 
+            lowerInput.contains("turn up brightness") || lowerInput.contains("make screen brighter") -> {
+                phoneControlService.increaseBrightness()
+            }
+            
+            lowerInput.contains("brightness down") || lowerInput.contains("decrease brightness") || 
+            lowerInput.contains("turn down brightness") || lowerInput.contains("make screen darker") || 
+            lowerInput.contains("dim screen") -> {
+                phoneControlService.decreaseBrightness()
+            }
+            
+            // WiFi controls
+            lowerInput.contains("turn on wifi") || lowerInput.contains("enable wifi") || 
+            lowerInput.contains("activate wifi") || lowerInput.contains("connect to wifi") -> {
+                requestWriteSettingsPermission()
+                phoneControlService.toggleWifi(true)
+            }
+            
+            lowerInput.contains("turn off wifi") || lowerInput.contains("disable wifi") || 
+            lowerInput.contains("deactivate wifi") || lowerInput.contains("disconnect wifi") -> {
+                requestWriteSettingsPermission()
+                phoneControlService.toggleWifi(false)
+            }
+            
+            // Bluetooth controls
+            lowerInput.contains("turn on bluetooth") || lowerInput.contains("enable bluetooth") || 
+            lowerInput.contains("activate bluetooth") -> {
+                requestBluetoothPermission()
+                phoneControlService.toggleBluetooth(true)
+            }
+            
+            lowerInput.contains("turn off bluetooth") || lowerInput.contains("disable bluetooth") || 
+            lowerInput.contains("deactivate bluetooth") -> {
+                requestBluetoothPermission()
+                phoneControlService.toggleBluetooth(false)
+            }
+            
+            // App launching
+            lowerInput.startsWith("open ") || lowerInput.startsWith("launch ") || 
+            lowerInput.startsWith("start ") || lowerInput.startsWith("run ") -> {
+                val appName = extractAppName(lowerInput)
+                if (appName.isNotEmpty()) {
+                    phoneControlService.launchApp(appName)
+                } else {
+                    "Please specify which app to open"
+                }
+            }
+            
+            // Settings navigation
+            lowerInput.contains("open settings") || lowerInput.contains("go to settings") -> {
+                val settingType = extractSettingType(lowerInput)
+                phoneControlService.openSettings(settingType)
+            }
+            
+            // System navigation - Home screen
+            lowerInput.contains("go home") || lowerInput.contains("home screen") || 
+            lowerInput.contains("go to home") || lowerInput == "home" -> {
+                phoneControlService.performSystemAction("home")
+            }
+            
+            // System navigation - Back
+            lowerInput.contains("go back") || lowerInput == "back" -> {
+                phoneControlService.performSystemAction("back")
+            }
+            
+            // System navigation - Recent apps
+            lowerInput.contains("recent apps") || lowerInput.contains("show recent") || 
+            lowerInput.contains("recents") || lowerInput.contains("recent tasks") -> {
+                phoneControlService.performSystemAction("recent apps")
+            }
+            
+            // System navigation - Lock screen
+            lowerInput.contains("lock screen") || lowerInput.contains("lock phone") || 
+            lowerInput.contains("lock device") || lowerInput == "lock" || 
+            lowerInput.contains("turn off screen") || lowerInput.contains("sleep device") -> {
+                phoneControlService.performSystemAction("lock")
+            }
+            
+            // System navigation - Notifications
+            lowerInput.contains("notifications") || lowerInput.contains("show notifications") || 
+            lowerInput.contains("open notifications") || lowerInput.contains("pull down notifications") || 
+            lowerInput.contains("check notifications") -> {
+                phoneControlService.performSystemAction("notifications")
+            }
+            
+            // System navigation - Quick settings
+            lowerInput.contains("quick settings") || lowerInput.contains("show quick settings") || 
+            lowerInput.contains("open quick settings") || lowerInput.contains("system settings") || 
+            lowerInput.contains("toggles") || lowerInput.contains("quick panel") -> {
+                phoneControlService.performSystemAction("quick settings")
+            }
+            
+            // Split screen
+            lowerInput.contains("split screen") || lowerInput.contains("multi window") || 
+            lowerInput.contains("dual screen") -> {
+                phoneControlService.performSystemAction("split screen")
+            }
+            
+            // Take screenshot
+            lowerInput.contains("screenshot") || lowerInput.contains("take screenshot") || 
+            lowerInput.contains("capture screen") || lowerInput.contains("screen capture") -> {
+                phoneControlService.performSystemAction("screenshot")
+            }
+            
+            // Open camera
+            lowerInput == "camera" || lowerInput.contains("open camera") || 
+            lowerInput.contains("take photo") || lowerInput.contains("take picture") -> {
+                phoneControlService.launchApp("camera")
+            }
+            
+            // Do not disturb mode
+            lowerInput.contains("do not disturb") || lowerInput.contains("silent mode") || 
+            lowerInput.contains("mute notifications") -> {
+                phoneControlService.performSystemAction("do not disturb")
+            }
+            
+            // Power saving mode
+            lowerInput.contains("power saving") || lowerInput.contains("battery saver") || 
+            lowerInput.contains("save battery") -> {
+                phoneControlService.performSystemAction("power saving")
+            }
+            
+            // Turn on flashlight/torch
+            lowerInput.contains("flashlight") || lowerInput.contains("torch") || 
+            lowerInput.contains("turn on light") -> {
+                phoneControlService.performSystemAction("flashlight")
+            }
+            
+            // If no phone control command matched
+            else -> null
+        }
+    }
+
+    private fun extractAppName(command: String): String {
+        val keywords = listOf("open", "launch", "start", "run")
+        var appName = command
+        
+        for (keyword in keywords) {
+            appName = appName.replace(keyword, "").trim()
+        }
+        
+        // Additional cleaning
+        val stopWords = listOf("the", "app", "application")
+        for (word in stopWords) {
+            appName = appName.replace(" $word", "").trim()
+        }
+        
+        return appName
+    }
+
+    private fun extractSettingType(command: String): String {
+        val keywords = listOf("open settings", "go to settings", "settings for", "open setting", "go to setting")
+        var settingType = command
+        
+        for (keyword in keywords) {
+            settingType = settingType.replace(keyword, "").trim()
+        }
+        
+        return if (settingType.isEmpty() || settingType == command) "general" else settingType
+    }
+
+    private fun requestWriteSettingsPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.System.canWrite(this)) {
+                val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS)
+                intent.data = Uri.parse("package:$packageName")
+                startActivityForResult(intent, WRITE_SETTINGS_REQUEST_CODE)
+                Toast.makeText(this, "Please grant permission to modify system settings", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun requestBluetoothPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val permissions = arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN
+            )
+            
+            val needsPermission = permissions.any {
+                ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+            }
+            
+            if (needsPermission) {
+                ActivityCompat.requestPermissions(this, permissions, BLUETOOTH_PERMISSION_CODE)
+                Toast.makeText(this, "Please grant Bluetooth permissions", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    companion object {
+        private const val SPEECH_REQUEST_CODE = 100
+        private const val WRITE_SETTINGS_REQUEST_CODE = 101
+        private const val BLUETOOTH_PERMISSION_CODE = 102
     }
 } 

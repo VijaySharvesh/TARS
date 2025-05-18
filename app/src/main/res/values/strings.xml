@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">TARS</string>
     <string name="default_web_client_id">YOUR_WEB_CLIENT_ID</string>
+    <string name="mic_button_description">Microphone button</string>
 </resources>

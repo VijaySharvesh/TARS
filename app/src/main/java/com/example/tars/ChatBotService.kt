@@ -3,13 +3,16 @@ package com.example.tars
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import androidx.annotation.RequiresApi
 import java.util.Locale
 
 class ChatBotService(private val context: Context) {
     private var textToSpeech: TextToSpeech? = null
     private var isInitialized = false
+    private val phoneControlService = PhoneControlService(context)
 
     init {
         initializeTextToSpeech()
@@ -29,19 +32,102 @@ class ChatBotService(private val context: Context) {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     fun processCommand(command: String) {
+        val lowerCommand = command.lowercase()
         val response = when {
-            command.contains("navigate") || command.contains("directions") -> {
-                handleNavigation(command)
+            // Navigation commands
+            lowerCommand.contains("navigate") || lowerCommand.contains("directions") -> {
+                handleNavigation(lowerCommand)
             }
-            command.contains("call") -> {
-                handlePhoneCall(command)
+            
+            // Phone call commands
+            lowerCommand.contains("call") -> {
+                handlePhoneCall(lowerCommand)
             }
+            
+            // Volume control commands
+            lowerCommand.contains("volume up") || lowerCommand.contains("increase volume") -> {
+                phoneControlService.adjustVolume(true)
+            }
+            lowerCommand.contains("volume down") || lowerCommand.contains("decrease volume") -> {
+                phoneControlService.adjustVolume(false)
+            }
+            
+            // Brightness control commands
+            lowerCommand.contains("brightness up") || lowerCommand.contains("increase brightness") -> {
+                phoneControlService.increaseBrightness()
+            }
+            lowerCommand.contains("brightness down") || lowerCommand.contains("decrease brightness") -> {
+                phoneControlService.decreaseBrightness()
+            }
+            
+            // WiFi commands
+            lowerCommand.contains("turn on wifi") || lowerCommand.contains("enable wifi") -> {
+                phoneControlService.toggleWifi(true)
+            }
+            lowerCommand.contains("turn off wifi") || lowerCommand.contains("disable wifi") -> {
+                phoneControlService.toggleWifi(false)
+            }
+            
+            // Bluetooth commands
+            lowerCommand.contains("turn on bluetooth") || lowerCommand.contains("enable bluetooth") -> {
+                phoneControlService.toggleBluetooth(true)
+            }
+            lowerCommand.contains("turn off bluetooth") || lowerCommand.contains("disable bluetooth") -> {
+                phoneControlService.toggleBluetooth(false)
+            }
+            
+            // App launch commands
+            lowerCommand.contains("open") && (!lowerCommand.contains("setting")) -> {
+                val appName = extractAppName(lowerCommand)
+                if (appName.isNotEmpty()) {
+                    phoneControlService.launchApp(appName)
+                } else {
+                    "Please specify which app to open"
+                }
+            }
+            
+            // Settings commands
+            lowerCommand.contains("open settings") || lowerCommand.contains("go to setting") -> {
+                val settingType = extractSettingType(lowerCommand)
+                phoneControlService.openSettings(settingType)
+            }
+            
+            // General AI responses
             else -> {
-                generateAIResponse(command)
+                generateAIResponse(lowerCommand)
             }
         }
         speakResponse(response)
+    }
+
+    private fun extractAppName(command: String): String {
+        val keywords = listOf("open", "launch", "start", "run")
+        var appName = command
+        
+        for (keyword in keywords) {
+            appName = appName.replace(keyword, "").trim()
+        }
+        
+        // Additional cleaning
+        val stopWords = listOf("the", "app", "application")
+        for (word in stopWords) {
+            appName = appName.replace(" $word", "").trim()
+        }
+        
+        return appName
+    }
+    
+    private fun extractSettingType(command: String): String {
+        val keywords = listOf("open settings", "go to settings", "settings for", "open setting", "go to setting")
+        var settingType = command
+        
+        for (keyword in keywords) {
+            settingType = settingType.replace(keyword, "").trim()
+        }
+        
+        return if (settingType.isEmpty() || settingType == command) "general" else settingType
     }
 
     private fun handleNavigation(command: String): String {
@@ -72,13 +158,16 @@ class ChatBotService(private val context: Context) {
         return "Please specify a phone number to call"
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun generateAIResponse(command: String): String {
         // Basic AI responses based on keywords
         return when {
             command.contains("hello") || command.contains("hi") -> 
                 "Hello! I'm TARS. How can I assist you today?"
             command.contains("help") -> 
-                "I can help you with navigation, making phone calls, and answering questions. What would you like to do?"
+                "I can help you with navigation, making phone calls, adjusting system settings like volume and brightness, controlling WiFi and Bluetooth, opening apps, and more. What would you like to do?"
+            command.contains("what can you do") -> 
+                "I can control your phone using voice commands. Try saying things like 'volume up', 'brightness down', 'turn on WiFi', 'open camera', 'go to settings', or 'call someone'."
             command.contains("weather") -> 
                 "I can check the weather for you. Would you like to know the current weather?"
             command.contains("time") -> 
