@@ -32,22 +32,66 @@ class PhoneControlService(private val context: Context) {
      * Volume Control Methods
      */
     fun adjustVolume(isUp: Boolean): String {
-        val result = if (isUp) {
-            audioManager.adjustStreamVolume(
-                AudioManager.STREAM_MUSIC,
-                AudioManager.ADJUST_RAISE,
-                AudioManager.FLAG_SHOW_UI
-            )
-            "Volume increased"
-        } else {
-            audioManager.adjustStreamVolume(
-                AudioManager.STREAM_MUSIC,
-                AudioManager.ADJUST_LOWER,
-                AudioManager.FLAG_SHOW_UI
-            )
-            "Volume decreased"
+        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        
+        return when {
+            isUp && currentVolume >= maxVolume -> {
+                "Volume is already at maximum"
+            }
+            !isUp && currentVolume <= 0 -> {
+                "Volume is already at minimum"
+            }
+            else -> {
+                audioManager.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    if (isUp) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                if (isUp) "Volume increased" else "Volume decreased"
+            }
         }
-        return result
+    }
+    
+    fun maxVolume(): String {
+        try {
+            val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            
+            return if (currentVolume >= maxVolume) {
+                "Volume is already at maximum"
+            } else {
+                audioManager.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    maxVolume,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                "Volume set to maximum"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting max volume: ${e.message}")
+            return "Failed to set maximum volume"
+        }
+    }
+    
+    fun minVolume(): String {
+        try {
+            val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+            
+            return if (currentVolume <= 0) {
+                "Volume is already at minimum"
+            } else {
+                audioManager.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    0,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                "Volume set to minimum"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting min volume: ${e.message}")
+            return "Failed to set minimum volume"
+        }
     }
     
     /**

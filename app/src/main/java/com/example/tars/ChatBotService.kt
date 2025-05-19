@@ -53,6 +53,14 @@ class ChatBotService(private val context: Context) {
             lowerCommand.contains("volume down") || lowerCommand.contains("decrease volume") -> {
                 phoneControlService.adjustVolume(false)
             }
+            lowerCommand.contains("max volume") || lowerCommand.contains("volume max") || 
+            lowerCommand.contains("full volume") || lowerCommand.contains("volume 100") -> {
+                phoneControlService.maxVolume()
+            }
+            lowerCommand.contains("min volume") || lowerCommand.contains("volume min") || 
+            lowerCommand.contains("mute volume") || lowerCommand.contains("volume 0") -> {
+                phoneControlService.minVolume()
+            }
             
             // Brightness control commands
             lowerCommand.contains("brightness up") || lowerCommand.contains("increase brightness") -> {

@@ -24,7 +24,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.tars.ai.AIProvider
-import com.example.tars.ai.GrokProvider
+import com.example.tars.ai.OpenRouterProvider
 import com.example.tars.ai.Personality
 import com.example.tars.databinding.ActivityChatBotBinding
 import kotlinx.coroutines.CoroutineScope
@@ -463,7 +463,7 @@ class ChatBotActivity : AppCompatActivity() {
                     val errorMessage = when {
                         !isNetworkAvailable() -> "No internet connection. Please check your network and try again."
                         e.message?.contains("Invalid API key", ignoreCase = true) == true -> "Invalid API key. Please update your Grok API key in settings."
-                        e.message?.contains("API key is not authorized", ignoreCase = true) == true -> "API key is not authorized. Please check your API key permissions."
+                        e.message?.contains("API key is not authorized", ignoreCase = true) == true -> "API key is not authorized. Please check your Grok API key permissions."
                         e.message?.contains("Rate limit exceeded", ignoreCase = true) == true -> "Rate limit exceeded. Please try again in a few moments."
                         e.message?.contains("Server error", ignoreCase = true) == true -> "Server error. Please try again later."
                         e.message?.contains("Empty response", ignoreCase = true) == true -> "No response received from server. Please try again."
@@ -592,6 +592,8 @@ class ChatBotActivity : AppCompatActivity() {
             Volume Controls:
             - "Volume up" or "Increase volume"
             - "Volume down" or "Decrease volume"
+            - "Max volume" or "Volume 100"
+            - "Min volume" or "Mute volume"
             
             Brightness Controls:
             - "Brightness up" or "Increase brightness" 
@@ -647,15 +649,9 @@ class ChatBotActivity : AppCompatActivity() {
 
     private fun setupAIProvider() {
         try {
-            val apiKey = Config.getOpenRouterKey()
-            if (apiKey.isNotEmpty()) {
-                aiProvider = GrokProvider(apiKey)
-            } else {
-                startSetupActivity()
-                return
-            }
+            aiProvider = OpenRouterProvider()
             
-            // Always show welcome message
+            // Show welcome message
             val humorDescription = when(humorSetting) {
                 0 -> "I'm in strictly professional mode."
                 in 1..20 -> "My humor is set to minimal."
@@ -666,27 +662,22 @@ class ChatBotActivity : AppCompatActivity() {
             }
             
             messageAdapter.addMessage(Message(
-                "Hello, I am TARS. Your personal assistant. My humor setting is currently at $humorSetting%. $humorDescription Feel free to adjust it using the slider above.",
+                "Hello, I am TARS. Your personal assistant powered by Meta Llama-3. My humor setting is currently at $humorSetting%. $humorDescription Feel free to adjust it using the slider above.",
                 false,
                 getCurrentTime()
             ))
         } catch (e: Exception) {
             Log.e("ChatBotActivity", "Error setting up AI provider: ${e.message}")
-            Toast.makeText(this, "Failed to set up AI provider", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Failed to initialize TARS. Please try again.", Toast.LENGTH_LONG).show()
+            finish()
         }
     }
     
-    private fun startSetupActivity() {
-        startActivity(Intent(this, SetupActivity::class.java))
-        finish()
-    }
-
     private suspend fun getAIResponse(input: String): String {
         if (!isNetworkAvailable()) {
             throw IOException("No internet connection")
         }
         
-        // Use AI provider
         aiProvider?.let {
             val personality = Personality(
                 humorLevel = humorSetting,
@@ -696,7 +687,7 @@ class ChatBotActivity : AppCompatActivity() {
             return it.getResponse(input, personality)
         }
         
-        throw IOException("Grok API provider not initialized")
+        throw IOException("AI provider not initialized")
     }
 
     private fun getJoke(): String {
@@ -832,22 +823,6 @@ class ChatBotActivity : AppCompatActivity() {
         }
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.menu_chatbot, menu)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            R.id.action_settings -> {
-                startActivity(Intent(this, SetupActivity::class.java))
-                finish()
-                true
-            }
-            else -> super.onOptionsItemSelected(item)
-        }
-    }
-
     @SuppressLint("ClickableViewAccessibility")
     private fun setupClickListeners() {
         binding.micButton.setOnTouchListener { view: android.view.View, event: android.view.MotionEvent ->
@@ -890,6 +865,18 @@ class ChatBotActivity : AppCompatActivity() {
             lowerInput.contains("turn down volume") || lowerInput.contains("lower volume") || 
             lowerInput.contains("quieter") -> {
                 phoneControlService.adjustVolume(false)
+            }
+            
+            lowerInput.contains("max volume") || lowerInput.contains("volume max") || 
+            lowerInput.contains("maximum volume") || lowerInput.contains("full volume") || 
+            lowerInput.contains("volume 100") || lowerInput.contains("volume hundred") -> {
+                phoneControlService.maxVolume()
+            }
+            
+            lowerInput.contains("min volume") || lowerInput.contains("volume min") || 
+            lowerInput.contains("minimum volume") || lowerInput.contains("mute volume") || 
+            lowerInput.contains("volume 0") || lowerInput.contains("volume zero") -> {
+                phoneControlService.minVolume()
             }
             
             // Brightness controls

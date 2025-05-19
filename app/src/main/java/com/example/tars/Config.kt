@@ -5,12 +5,20 @@ import android.content.SharedPreferences
 import java.util.Properties
 
 object Config {
-    // Default API key
-    private const val OPENROUTER_API_KEY = "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"  // Replace with your OpenRouter API key
-    
+    // Constants
     private const val PREFS_NAME = "TarsConfig"
-    private const val KEY_OPENROUTER = "openrouter_api_key"
     
+    // OpenRouter configuration
+    private const val API_KEY = "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"
+    const val MODEL_NAME = "meta-llama/llama-3-8b-instruct"
+    const val MAX_TOKENS = 1000
+    const val TEMPERATURE = 0.7
+    const val TOP_P = 0.9
+    const val FREQUENCY_PENALTY = 0.1
+    const val PRESENCE_PENALTY = 0.1
+    const val API_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+    
+    // Preferences
     private lateinit var prefs: SharedPreferences
     private var properties: Properties? = null
 
@@ -23,18 +31,27 @@ object Config {
         } catch (e: Exception) {
             // Ignore if config.properties doesn't exist
         }
-        
-        // If we have a stored API key, use it, otherwise default
-        if (!prefs.contains(KEY_OPENROUTER)) {
-            setOpenRouterKey(OPENROUTER_API_KEY)
-        }
     }
     
-    fun setOpenRouterKey(key: String) {
-        prefs.edit().putString(KEY_OPENROUTER, key).apply()
+    fun getModelConfig(): Map<String, Any> {
+        return mapOf(
+            "model" to MODEL_NAME,
+            "max_tokens" to MAX_TOKENS,
+            "temperature" to TEMPERATURE,
+            "top_p" to TOP_P,
+            "frequency_penalty" to FREQUENCY_PENALTY,
+            "presence_penalty" to PRESENCE_PENALTY
+        )
     }
     
-    fun getOpenRouterKey(): String {
-        return prefs.getString(KEY_OPENROUTER, OPENROUTER_API_KEY) ?: OPENROUTER_API_KEY
+    fun getApiHeaders(): Map<String, String> {
+        return mapOf(
+            "Authorization" to "Bearer $API_KEY",
+            "HTTP-Referer" to "https://github.com/tars-assistant",
+            "X-Title" to "TARS Android Assistant",
+            "Content-Type" to "application/json"
+        )
     }
+    
+    fun getApiEndpoint(): String = API_BASE_URL
 } 
