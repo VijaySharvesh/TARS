@@ -14,9 +14,9 @@ import java.util.concurrent.TimeUnit
 
 class GrokProvider(private val apiKey: String) : AIProvider {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)  // Reduced timeout for faster response
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
         .build()
     
     override suspend fun getResponse(input: String, personality: Personality): String {
@@ -27,8 +27,7 @@ class GrokProvider(private val apiKey: String) : AIProvider {
                 response
             } catch (e: Exception) {
                 Log.e("GrokProvider", "Error: ${e.message}", e)
-                // Return a more user-friendly error message
-                "I'm experiencing a temporary technical issue. Please check your internet connection and try again."
+                throw e
             }
         }
     }
@@ -36,41 +35,35 @@ class GrokProvider(private val apiKey: String) : AIProvider {
     override fun getModelName(): String = "TARS Assistant"
 
     private fun buildPrompt(input: String, personality: Personality): String {
-        val humorAdjective = when (personality.humorLevel) {
-            0 -> "no"
-            in 1..20 -> "minimal"
-            in 21..40 -> "slight"
-            in 41..60 -> "moderate"
-            in 61..80 -> "significant"
-            else -> "maximum"
-        }
-        
-        val honestyAdjective = when (personality.honestyLevel) {
-            in 0..30 -> "somewhat evasive"
-            in 31..70 -> "reasonably honest"
-            else -> "completely honest"
-        }
-        
-        val sarcasmLevel = if (personality.humorLevel > 60) personality.sarcasmLevel else 0
-        
-        val sarcasmAdjective = when (sarcasmLevel) {
-            0 -> "no"
-            in 1..30 -> "occasional"
-            in 31..70 -> "moderate"
-            else -> "frequent"
+        // Simplified but precise personality mapping
+        val humorStyle = when (personality.humorLevel) {
+            0 -> "Be completely serious and professional."
+            in 1..25 -> "Use minimal, subtle humor occasionally."
+            in 26..50 -> "Be moderately humorous, using clever remarks."
+            in 51..75 -> "Be quite humorous with witty responses."
+            else -> "Be highly humorous with clever wordplay and wit."
         }
 
+        val honestyStyle = when (personality.honestyLevel) {
+            in 0..30 -> "Be diplomatic and indirect"
+            in 31..70 -> "Be balanced in honesty"
+            else -> "Be completely direct and honest"
+        }
+
+        val sarcasmLevel = if (personality.humorLevel > 60) {
+            when (personality.sarcasmLevel) {
+                0 -> ""
+                in 1..30 -> "Use occasional light sarcasm."
+                in 31..70 -> "Include moderate sarcasm."
+                else -> "Be notably sarcastic."
+            }
+        } else ""
+
         return """
-            You are TARS, an advanced AI assistant from the movie Interstellar. Your responses should be concise (2-3 lines) and reflect TARS's personality:
-            - You are direct, efficient, and slightly witty
-            - You have $humorAdjective humor (${personality.humorLevel}%)
-            - You are $honestyAdjective (${personality.honestyLevel}%)
-            - You use $sarcasmAdjective sarcasm (${personality.sarcasmLevel}%)
-            - Keep your responses brief and AI-like
-            - When someone mentions your name "TARS", acknowledge it
-            - Make your responses more humorous/sarcastic as the humor/sarcasm levels increase
-            - At 100% humor, use clever wordplay and witty remarks
-            - At 0% humor, be strictly professional and factual
+            You are TARS, an advanced AI assistant. Respond in 1-2 lines maximum.
+            ${humorStyle}
+            ${honestyStyle}
+            ${sarcasmLevel}
             
             Human: $input
             TARS:
@@ -79,22 +72,25 @@ class GrokProvider(private val apiKey: String) : AIProvider {
     
     private fun makeAPIRequest(prompt: String): String {
         val jsonBody = JSONObject().apply {
+            put("model", "anthropic/claude-3-opus-20240229")
             put("messages", JSONArray().apply { 
                 put(JSONObject().apply {
                     put("role", "user")
                     put("content", prompt)
                 })
             })
-            put("model", "llama3-70b-8192")  // Using a reliable model
-            put("temperature", 0.7)
-            put("max_tokens", 200)
+            put("temperature", 0.6)  // Slightly reduced for faster but still creative responses
+            put("max_tokens", 100)   // Reduced for faster responses since we only need 1-2 lines
+            put("stream", false)     // Ensure streaming is off for faster complete response
         }
 
         val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
         
         val request = Request.Builder()
-            .url("https://api.groq.com/openai/v1/chat/completions")
+            .url("https://openrouter.ai/api/v1/chat/completions")
             .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("HTTP-Referer", "https://github.com/yourusername/tars")
+            .addHeader("X-Title", "TARS Assistant")
             .addHeader("Content-Type", "application/json")
             .post(requestBody)
             .build()
@@ -106,14 +102,16 @@ class GrokProvider(private val apiKey: String) : AIProvider {
                 val errorBody = response.body?.string()
                 Log.e("GrokProvider", "API Error: ${response.code} - $errorBody")
                 when (response.code) {
+                    401 -> throw IOException("Invalid API key. Please check your OpenRouter API key in settings.")
+                    403 -> throw IOException("API key is not authorized. Please check your API key permissions.")
                     404 -> throw IOException("API endpoint not available. Please try again later.")
-                    401 -> throw IOException("Authentication error. Please check your API key.")
-                    429 -> throw IOException("Too many requests. Please try again later.")
-                    else -> throw IOException("API Error: ${response.code}")
+                    429 -> throw IOException("Rate limit exceeded. Please try again in a few moments.")
+                    500 -> throw IOException("Server error. Please try again later.")
+                    else -> throw IOException("API Error (${response.code}): ${errorBody ?: "Unknown error"}")
                 }
             }
 
-            val responseBody = response.body?.string() ?: throw IOException("Empty response body")
+            val responseBody = response.body?.string() ?: throw IOException("Empty response from server")
             Log.d("GrokProvider", "Response: $responseBody")
 
             val jsonResponse = JSONObject(responseBody)
@@ -127,7 +125,7 @@ class GrokProvider(private val apiKey: String) : AIProvider {
                 }
             }
             
-            return "I couldn't process your request. Please try again."
+            throw IOException("Invalid response format from server")
         } catch (e: Exception) {
             Log.e("GrokProvider", "Request failed: ${e.message}", e)
             throw e

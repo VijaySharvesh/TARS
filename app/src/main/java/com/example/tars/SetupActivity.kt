@@ -25,7 +25,7 @@ class SetupActivity : AppCompatActivity() {
         apiKeyLabel = findViewById(R.id.apiKeyLabel)
 
         // Set current API key if available
-        val currentApiKey = Config.getGrokKey()
+        val currentApiKey = Config.getOpenRouterKey()
         if (currentApiKey.isNotEmpty()) {
             apiKeyInput.setText(currentApiKey)
         }
@@ -39,7 +39,7 @@ class SetupActivity : AppCompatActivity() {
         saveButton.setOnClickListener {
             val apiKey = apiKeyInput.text.toString().trim()
             if (apiKey.isNotEmpty()) {
-                Config.setGrokKey(apiKey)
+                Config.setOpenRouterKey(apiKey)
                 startChatBot()
             } else {
                 Toast.makeText(this, "Please enter a valid API key", Toast.LENGTH_SHORT).show()

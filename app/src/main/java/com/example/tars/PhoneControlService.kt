@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.net.Uri
@@ -19,8 +20,9 @@ class PhoneControlService(private val context: Context) {
     
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-    private val bluetoothManager by lazy { context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
+    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter by lazy { bluetoothManager.adapter }
+    private val packageManager = context.packageManager
     
     companion object {
         private const val TAG = "PhoneControlService"
@@ -346,28 +348,31 @@ class PhoneControlService(private val context: Context) {
     fun launchApp(appName: String): String {
         try {
             Log.d(TAG, "Attempting to launch app: $appName")
-            val packageManager = context.packageManager
             
             // First try direct package name mapping
             val directPackageName = getPackageName(appName)
             Log.d(TAG, "Direct package mapping for '$appName' is: $directPackageName")
             
-            if (directPackageName != appName) { // Only if we found a mapping
-                val directIntent = packageManager.getLaunchIntentForPackage(directPackageName)
-                if (directIntent != null) {
-                    Log.d(TAG, "Found direct package match: $directPackageName")
-                    directIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    context.startActivity(directIntent)
-                    return "Launching $appName"
+            if (directPackageName != null) {
+                try {
+                    val directIntent = packageManager.getLaunchIntentForPackage(directPackageName)
+                    if (directIntent != null) {
+                        Log.d(TAG, "Found direct package match: $directPackageName")
+                        directIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(directIntent)
+                        return "Opening $appName"
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error launching direct package: ${e.message}")
                 }
             }
-            
+
             // Get installed apps
             val installedApps = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                packageManager.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
+                packageManager.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
             } else {
                 @Suppress("DEPRECATION")
-                packageManager.getInstalledApplications(0)
+                packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
             }
             
             // Find apps that might match the requested name
@@ -381,35 +386,18 @@ class PhoneControlService(private val context: Context) {
                     val appInfo = packageManager.getApplicationInfo(app.packageName, 0)
                     val appLabel = packageManager.getApplicationLabel(appInfo).toString()
                     val lowerAppLabel = appLabel.lowercase()
+                    val lowerPackageName = app.packageName.lowercase()
                     
-                    // Calculate match score - exact match gets highest score
-                    var matchScore = 0.0f
-                    
-                    if (lowerAppLabel == searchName) {
-                        matchScore = 1.0f
-                    } else if (lowerAppLabel.contains(searchName)) {
-                        matchScore = 0.8f
-                    } else if (searchName.contains(lowerAppLabel)) {
-                        matchScore = 0.6f
-                    } else {
-                        // Check for partial word matches (e.g., "whats" matching "whatsapp")
-                        val searchWords = searchName.split(" ")
-                        for (word in searchWords) {
-                            if (word.length > 2 && lowerAppLabel.contains(word)) {
-                                matchScore = maxOf(matchScore, 0.4f)
-                            }
-                        }
-                        
-                        // Check for acronyms (e.g., "fb" for "facebook")
-                        if (isAcronymMatch(searchName, lowerAppLabel)) {
-                            matchScore = maxOf(matchScore, 0.5f)
-                        }
-                    }
+                    // Calculate match score
+                    var matchScore = calculateMatchScore(searchName, lowerAppLabel, lowerPackageName)
                     
                     // Only add if there's some match and it has a launch intent
-                    if (matchScore > 0 && packageManager.getLaunchIntentForPackage(app.packageName) != null) {
-                        matchingApps.add(Triple(app.packageName, appLabel, matchScore))
-                        Log.d(TAG, "Potential match: '$appLabel' with score $matchScore")
+                    if (matchScore > 0.2f) { // Increased threshold for better matches
+                        val intent = packageManager.getLaunchIntentForPackage(app.packageName)
+                        if (intent != null) {
+                            matchingApps.add(Triple(app.packageName, appLabel, matchScore))
+                            Log.d(TAG, "Found potential match: '$appLabel' (${app.packageName}) with score $matchScore")
+                        }
                     }
                     
                 } catch (e: Exception) {
@@ -421,155 +409,166 @@ class PhoneControlService(private val context: Context) {
             // Sort by match score (highest first)
             matchingApps.sortByDescending { it.third }
             
-            if (matchingApps.isNotEmpty()) {
-                // Launch the best matching app
-                val (packageName, displayName, _) = matchingApps.first()
-                Log.d(TAG, "Launching best match: '$displayName' ($packageName)")
-                val intent = packageManager.getLaunchIntentForPackage(packageName)
-                if (intent != null) {
-                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    context.startActivity(intent)
-                    return "Launching $displayName"
+            when {
+                matchingApps.isEmpty() -> {
+                    Log.d(TAG, "No matching apps found")
+                    return "Sorry, I couldn't find an app matching '$appName'"
+                }
+                matchingApps.size == 1 -> {
+                    val (packageName, displayName, _) = matchingApps.first()
+                    Log.d(TAG, "Found single match: $displayName ($packageName)")
+                    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                    if (launchIntent != null) {
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(launchIntent)
+                        return "Opening $displayName"
+                    }
+                }
+                else -> {
+                    // Take the best match if it has a significantly higher score
+                    val bestMatch = matchingApps.first()
+                    val secondBest = matchingApps.getOrNull(1)
+                    
+                    if (secondBest == null || bestMatch.third > secondBest.third + 0.3f) {
+                        // Best match is significantly better
+                        val launchIntent = packageManager.getLaunchIntentForPackage(bestMatch.first)
+                        if (launchIntent != null) {
+                            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(launchIntent)
+                            return "Opening ${bestMatch.second}"
+                        }
+                    }
+                    
+                    // Multiple close matches found, show top 3
+                    val appList = matchingApps.take(3)
+                        .map { it.second }
+                        .joinToString(", ")
+                    Log.d(TAG, "Multiple matches found: $appList")
+                    return "Found multiple matching apps: $appList. Please be more specific."
                 }
             }
             
-            Log.d(TAG, "No matching app found for: $appName")
-            return "Cannot find app: $appName. Please check if it's installed or try with a different name."
-            
+            return "Unable to launch $appName"
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch app: $appName", e)
-            return "Failed to launch $appName: ${e.message}"
+            Log.e(TAG, "Error launching app: ${e.message}", e)
+            return "Error launching $appName: ${e.message}"
         }
     }
     
-    // Helper to check if input might be an acronym of app name
-    private fun isAcronymMatch(input: String, appName: String): Boolean {
-        // Handle common acronyms
-        val commonAcronyms = mapOf(
-            "fb" to "facebook",
-            "ig" to "instagram",
-            "wa" to "whatsapp",
-            "yt" to "youtube",
-            "gm" to "gmail",
-            "li" to "linkedin",
-            "tg" to "telegram",
-            "sc" to "snapchat"
-        )
+    private fun calculateMatchScore(searchName: String, appLabel: String, packageName: String): Float {
+        var score = 0.0f
         
-        // Check common acronyms dictionary
-        if (commonAcronyms.containsKey(input) && appName.contains(commonAcronyms[input]!!)) {
-            return true
-        }
-        
-        // Try to match first letters of words
-        val words = appName.split(" ")
-        if (words.size > 1) {
-            val acronym = words.joinToString("") { it.take(1) }
-            return input == acronym
-        }
-        
-        return false
-    }
-    
-    private fun getPackageName(appName: String): String {
-        // This is a mapping of common app names to package names
-        val appMapping = mapOf(
-            // Google apps
-            "settings" to "com.android.settings",
-            "maps" to "com.google.android.apps.maps",
-            "google maps" to "com.google.android.apps.maps",
-            "chrome" to "com.android.chrome",
-            "google chrome" to "com.android.chrome",
-            "browser" to "com.android.chrome",
-            "gmail" to "com.google.android.gm",
-            "email" to "com.google.android.gm",
-            "mail" to "com.google.android.gm",
-            "youtube" to "com.google.android.youtube",
-            "calculator" to "com.google.android.calculator",
-            "calendar" to "com.google.android.calendar",
-            "google calendar" to "com.google.android.calendar",
-            "phone" to "com.google.android.dialer",
-            "dialer" to "com.google.android.dialer",
-            "google phone" to "com.google.android.dialer",
-            "messages" to "com.google.android.apps.messaging",
-            "sms" to "com.google.android.apps.messaging",
-            "google messages" to "com.google.android.apps.messaging",
-            "photos" to "com.google.android.apps.photos",
-            "gallery" to "com.google.android.apps.photos",
-            "google photos" to "com.google.android.apps.photos",
-            "camera" to "com.android.camera2",
-            "clock" to "com.google.android.deskclock",
-            "alarm" to "com.google.android.deskclock",
-            "google clock" to "com.google.android.deskclock",
-            "play store" to "com.android.vending",
-            "google play" to "com.android.vending",
-            "drive" to "com.google.android.apps.docs",
-            "google drive" to "com.google.android.apps.docs",
-            "contacts" to "com.google.android.contacts",
-            "google contacts" to "com.google.android.contacts",
+        // Exact matches get highest score
+        if (appLabel == searchName) {
+            score = 1.0f
+        } else if (appLabel.contains(searchName)) {
+            score = 0.8f
+        } else if (searchName.contains(appLabel)) {
+            score = 0.7f
+        } else {
+            // Check for partial word matches
+            val searchWords = searchName.split(" ")
+            val appWords = appLabel.split(" ")
             
-            // Samsung apps
-            "samsung gallery" to "com.sec.android.gallery3d",
-            "samsung messages" to "com.samsung.android.messaging",
-            "samsung camera" to "com.sec.android.app.camera",
-            "samsung calendar" to "com.samsung.android.calendar",
-            "samsung browser" to "com.sec.android.app.sbrowser",
-            "galaxy store" to "com.sec.android.app.samsungapps",
+            for (searchWord in searchWords) {
+                if (searchWord.length > 2) {
+                    // Check if any app word starts with the search word
+                    for (appWord in appWords) {
+                        if (appWord.startsWith(searchWord)) {
+                            score = maxOf(score, 0.6f)
+                        } else if (appWord.contains(searchWord)) {
+                            score = maxOf(score, 0.4f)
+                        }
+                    }
+                }
+            }
             
-            // Social media
-            "facebook" to "com.facebook.katana",
-            "instagram" to "com.instagram.android",
-            "twitter" to "com.twitter.android",
-            "x" to "com.twitter.android",
-            "snapchat" to "com.snapchat.android",
-            "tiktok" to "com.zhiliaoapp.musically",
-            "whatsapp" to "com.whatsapp",
-            "telegram" to "org.telegram.messenger",
-            "messenger" to "com.facebook.orca",
-            "facebook messenger" to "com.facebook.orca",
-            "pinterest" to "com.pinterest",
-            "linkedin" to "com.linkedin.android",
+            // Check package name for matches
+            if (packageName.contains(searchName)) {
+                score = maxOf(score, 0.5f)
+            }
             
-            // Streaming
-            "netflix" to "com.netflix.mediaclient",
-            "spotify" to "com.spotify.music",
-            "amazon prime" to "com.amazon.avod.thirdpartyclient",
-            "prime video" to "com.amazon.avod.thirdpartyclient",
-            "disney plus" to "com.disney.disneyplus",
-            "disney+" to "com.disney.disneyplus",
-            "hulu" to "com.hulu.plus",
-            "youtube music" to "com.google.android.apps.youtube.music",
-            
-            // Productivity
-            "microsoft office" to "com.microsoft.office.officehubrow",
-            "office" to "com.microsoft.office.officehubrow",
-            "word" to "com.microsoft.office.word",
-            "microsoft word" to "com.microsoft.office.word",
-            "excel" to "com.microsoft.office.excel",
-            "microsoft excel" to "com.microsoft.office.excel",
-            "powerpoint" to "com.microsoft.office.powerpoint",
-            "microsoft powerpoint" to "com.microsoft.office.powerpoint",
-            "outlook" to "com.microsoft.office.outlook",
-            "microsoft outlook" to "com.microsoft.office.outlook",
-            "onedrive" to "com.microsoft.skydrive",
-            "microsoft onedrive" to "com.microsoft.skydrive",
-            "evernote" to "com.evernote",
-            "google docs" to "com.google.android.apps.docs.editors.docs",
-            "docs" to "com.google.android.apps.docs.editors.docs",
-            "google sheets" to "com.google.android.apps.docs.editors.sheets",
-            "sheets" to "com.google.android.apps.docs.editors.sheets",
-            "google slides" to "com.google.android.apps.docs.editors.slides",
-            "slides" to "com.google.android.apps.docs.editors.slides"
-        )
-        
-        // Search the mapping case-insensitively
-        for ((key, value) in appMapping) {
-            if (appName.equals(key, ignoreCase = true)) {
-                return value
+            // Check for acronym match (e.g., "gm" matches "Google Maps")
+            if (isAcronymMatch(searchName, appLabel)) {
+                score = maxOf(score, 0.7f)
             }
         }
         
-        return appName // Return as-is if not in the mapping
+        return score
+    }
+    
+    private fun isAcronymMatch(searchName: String, appLabel: String): Boolean {
+        val words = appLabel.split(" ")
+        if (words.size > 1) {
+            val acronym = words.joinToString("") { it.take(1) }.lowercase()
+            return searchName == acronym
+        }
+        return false
+    }
+    
+    private fun getPackageName(appName: String): String? {
+        // Common package names mapping
+        return when (appName.lowercase().trim()) {
+            "whatsapp" -> "com.whatsapp"
+            "facebook" -> "com.facebook.katana"
+            "messenger", "facebook messenger" -> "com.facebook.orca"
+            "instagram" -> "com.instagram.android"
+            "youtube" -> "com.google.android.youtube"
+            "maps", "google maps" -> "com.google.android.apps.maps"
+            "chrome", "google chrome" -> "com.android.chrome"
+            "camera" -> "com.android.camera2"
+            "gallery", "photos" -> "com.google.android.apps.photos"
+            "phone", "dialer" -> "com.android.dialer"
+            "messages", "sms" -> "com.android.messaging"
+            "settings" -> "com.android.settings"
+            "play store", "google play" -> "com.android.vending"
+            "gmail", "email" -> "com.google.android.gm"
+            "calendar" -> "com.google.android.calendar"
+            "clock", "alarm" -> "com.android.deskclock"
+            "calculator" -> "com.android.calculator2"
+            "files", "file manager" -> "com.android.documentsui"
+            "contacts" -> "com.android.contacts"
+            "twitter", "x" -> "com.twitter.android"
+            "telegram" -> "org.telegram.messenger"
+            "snapchat" -> "com.snapchat.android"
+            "tiktok" -> "com.zhiliaoapp.musically"
+            "netflix" -> "com.netflix.mediaclient"
+            "spotify" -> "com.spotify.music"
+            "google" -> "com.google.android.googlequicksearchbox"
+            "drive", "google drive" -> "com.google.android.apps.docs"
+            "meet", "google meet" -> "com.google.android.apps.meetings"
+            "duo", "google duo" -> "com.google.android.apps.tachyon"
+            "keep", "google keep" -> "com.google.android.keep"
+            "lens", "google lens" -> "com.google.ar.lens"
+            "photos", "google photos" -> "com.google.android.apps.photos"
+            "translate", "google translate" -> "com.google.android.apps.translate"
+            "waze" -> "com.waze"
+            "outlook" -> "com.microsoft.office.outlook"
+            "teams", "microsoft teams" -> "com.microsoft.teams"
+            "word", "microsoft word" -> "com.microsoft.office.word"
+            "excel", "microsoft excel" -> "com.microsoft.office.excel"
+            "powerpoint", "microsoft powerpoint" -> "com.microsoft.office.powerpoint"
+            "onedrive", "microsoft onedrive" -> "com.microsoft.skydrive"
+            "skype" -> "com.skype.raider"
+            "linkedin" -> "com.linkedin.android"
+            "pinterest" -> "com.pinterest"
+            "reddit" -> "com.reddit.frontpage"
+            "twitch" -> "tv.twitch.android.app"
+            "discord" -> "com.discord"
+            "zoom" -> "us.zoom.videomeetings"
+            "uber" -> "com.ubercab"
+            "lyft" -> "me.lyft.android"
+            "amazon" -> "com.amazon.mShop.android.shopping"
+            "ebay" -> "com.ebay.mobile"
+            "paypal" -> "com.paypal.android.p2pmobile"
+            "venmo" -> "com.venmo"
+            "cash", "cash app" -> "com.squareup.cash"
+            "bank of america", "bofa" -> "com.infonow.bofa"
+            "chase" -> "com.chase.sig.android"
+            "wells fargo" -> "com.wf.wellsfargomobile"
+            "citi", "citibank" -> "com.citi.citimobile"
+            else -> null
+        }
     }
     
     /**
@@ -598,429 +597,5 @@ class PhoneControlService(private val context: Context) {
         intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
         context.startActivity(intent)
         return "Opening $settingType settings"
-    }
-    
-    /**
-     * System Navigation Methods
-     */
-    fun performSystemAction(actionType: String): String {
-        try {
-            Log.d(TAG, "Attempting system action: $actionType")
-            
-            when (actionType.lowercase()) {
-                "home", "go home", "home screen" -> {
-                    // Send HOME intent
-                    val intent = Intent(Intent.ACTION_MAIN)
-                    intent.addCategory(Intent.CATEGORY_HOME)
-                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    context.startActivity(intent)
-                    return "Going to home screen"
-                }
-                
-                "back", "go back" -> {
-                    // Try to simulate back button via AccessibilityService or instrumentation
-                    if (simulateBackButton()) {
-                        return "Going back"
-                    }
-                    return "Unable to go back. This requires special permissions."
-                }
-                
-                "recent apps", "recents", "show recent apps", "recent tasks" -> {
-                    // This generally requires special permissions, but we'll try
-                    if (openRecentApps()) {
-                        return "Showing recent apps"
-                    }
-                    return "Unable to show recent apps. This requires special permissions."
-                }
-                
-                "lock", "lock screen" -> {
-                    if (lockScreen()) {
-                        return "Locking screen"
-                    }
-                    return "Unable to lock screen. This requires device administrator permissions."
-                }
-                
-                "notifications", "open notifications", "show notifications" -> {
-                    if (openNotifications()) {
-                        return "Opening notifications"
-                    }
-                    return "Unable to open notifications. This requires special permissions."
-                }
-                
-                "quick settings", "open quick settings" -> {
-                    if (openQuickSettings()) {
-                        return "Opening quick settings"
-                    }
-                    return "Unable to open quick settings. This requires special permissions."
-                }
-                
-                "split screen" -> {
-                    if (activateSplitScreen()) {
-                        return "Activating split screen mode"
-                    }
-                    return "Unable to activate split screen. This requires special permissions."
-                }
-                
-                "screenshot" -> {
-                    if (takeScreenshot()) {
-                        return "Taking screenshot"
-                    }
-                    return "Unable to take screenshot. This requires special permissions."
-                }
-                
-                "do not disturb" -> {
-                    if (toggleDoNotDisturb()) {
-                        return "Toggling Do Not Disturb mode"
-                    }
-                    return "Opening Do Not Disturb settings"
-                }
-                
-                "power saving" -> {
-                    if (togglePowerSaving()) {
-                        return "Toggling power saving mode"
-                    }
-                    return "Opening battery settings"
-                }
-                
-                "flashlight" -> {
-                    if (toggleFlashlight()) {
-                        return "Toggling flashlight"
-                    }
-                    return "Unable to toggle flashlight. This may not be supported on your device."
-                }
-                
-                else -> return "Unknown system action: $actionType"
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to perform system action: $actionType", e)
-            return "Failed to perform action: ${e.message}"
-        }
-    }
-    
-    private fun simulateBackButton(): Boolean {
-        try {
-            // Try using instrumentation if available (works on some devices, requires permission)
-            try {
-                val runtime = Runtime.getRuntime()
-                runtime.exec("input keyevent " + android.view.KeyEvent.KEYCODE_BACK)
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to simulate back via runtime exec: ${e.message}")
-            }
-            
-            // Try alternative methods
-            try {
-                // Try using accessibility service if enabled
-                // This is a partial implementation that will need to be expanded
-                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(intent)
-                return false // Return false because we're just showing settings
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open accessibility settings: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in simulateBackButton", e)
-            return false
-        }
-    }
-    
-    private fun openRecentApps(): Boolean {
-        try {
-            // Try different methods to open recent apps
-            
-            // Method 1: Try using system service on newer Android versions
-            try {
-                // For newer Android versions, try using overview screen intent
-                val serviceIntent = Intent("com.android.systemui.TOGGLE_RECENTS")
-                serviceIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(serviceIntent)
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to show recents via intent: ${e.message}")
-            }
-            
-            // Method 2: Try using runtime command (requires permission)
-            try {
-                val runtime = Runtime.getRuntime()
-                runtime.exec("input keyevent " + android.view.KeyEvent.KEYCODE_APP_SWITCH)
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to show recents via runtime command: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in openRecentApps", e)
-            return false
-        }
-    }
-    
-    private fun lockScreen(): Boolean {
-        try {
-            // Method 1: Try using DevicePolicyManager (requires device admin app)
-            try {
-                val devicePolicyManager = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
-                // This requires the app to be a device administrator
-                devicePolicyManager.lockNow()
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to lock using DevicePolicyManager: ${e.message}")
-            }
-            
-            // Method 2: Show information to become device admin
-            try {
-                val intent = Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(intent)
-                return false // Not really successful, just showing admin screen
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to show device admin screen: ${e.message}")
-            }
-            
-            // Method 3: For older devices, try to lock using power manager (rarely works)
-            try {
-                val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-                val powerManagerClass = powerManager::class.java
-                val goToSleepMethod = powerManagerClass.getMethod("goToSleep", Long::class.java)
-                goToSleepMethod.invoke(powerManager, System.currentTimeMillis())
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to lock using PowerManager: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in lockScreen", e)
-            return false
-        }
-    }
-    
-    private fun openNotifications(): Boolean {
-        try {
-            // Try using reflection to access StatusBarManager (works on some devices)
-            try {
-                val statusBarService = context.getSystemService("statusbar")
-                val statusBarManager = Class.forName("android.app.StatusBarManager")
-                val expandNotificationsPanel = statusBarManager.getMethod("expandNotificationsPanel")
-                expandNotificationsPanel.invoke(statusBarService)
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open notifications via reflection: ${e.message}")
-            }
-            
-            // Alternative method - try using runtime command
-            try {
-                val runtime = Runtime.getRuntime()
-                runtime.exec("service call statusbar 1")
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open notifications via runtime command: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in openNotifications", e)
-            return false
-        }
-    }
-    
-    private fun openQuickSettings(): Boolean {
-        try {
-            // Try using reflection to access StatusBarManager for quick settings
-            try {
-                val statusBarService = context.getSystemService("statusbar")
-                val statusBarManager = Class.forName("android.app.StatusBarManager")
-                val expandSettingsPanel = statusBarManager.getMethod("expandSettingsPanel")
-                expandSettingsPanel.invoke(statusBarService)
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open quick settings via reflection: ${e.message}")
-            }
-            
-            // Alternative method - try using runtime command
-            try {
-                val runtime = Runtime.getRuntime()
-                runtime.exec("service call statusbar 2")
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open quick settings via runtime command: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in openQuickSettings", e)
-            return false
-        }
-    }
-    
-    private fun activateSplitScreen(): Boolean {
-        try {
-            // Method 1: Try using runtime command (requires permission)
-            try {
-                val runtime = Runtime.getRuntime()
-                // KEYCODE_TOGGLE_SPLIT_SCREEN is 285
-                runtime.exec("input keyevent 285")
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to activate split screen via runtime command: ${e.message}")
-            }
-            
-            // Method 2: Try accessibility service route
-            try {
-                // Direct user to accessibility settings to enable this functionality
-                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(intent)
-                return false
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open accessibility settings: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in activateSplitScreen", e)
-            return false
-        }
-    }
-    
-    private fun takeScreenshot(): Boolean {
-        try {
-            // Method 1: Try using runtime command (requires permission)
-            try {
-                val runtime = Runtime.getRuntime()
-                // Different devices may use different key combinations
-                runtime.exec("input keyevent 120") // KEYCODE_SCREENSHOT on some devices
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to take screenshot via runtime command: ${e.message}")
-            }
-            
-            // Method 2: Alternative key combination
-            try {
-                val runtime = Runtime.getRuntime()
-                // Simulate pressing power + volume down
-                runtime.exec("input keyevent KEYCODE_POWER+KEYCODE_VOLUME_DOWN")
-                return true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to take screenshot via key combination: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in takeScreenshot", e)
-            return false
-        }
-    }
-    
-    private fun toggleDoNotDisturb(): Boolean {
-        try {
-            // Requires notification policy access permission
-            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // Check if app has notification policy access
-                if (notificationManager.isNotificationPolicyAccessGranted) {
-                    // Toggle DND mode
-                    val currentMode = notificationManager.currentInterruptionFilter
-                    val newMode = if (currentMode != android.app.NotificationManager.INTERRUPTION_FILTER_NONE) {
-                        android.app.NotificationManager.INTERRUPTION_FILTER_NONE // Turn on DND
-                    } else {
-                        android.app.NotificationManager.INTERRUPTION_FILTER_ALL // Turn off DND
-                    }
-                    notificationManager.setInterruptionFilter(newMode)
-                    return true
-                } else {
-                    // Request notification policy access permission
-                    val intent = Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    context.startActivity(intent)
-                    return false
-                }
-            } else {
-                // For older Android versions, open sound settings
-                val intent = Intent(Settings.ACTION_SOUND_SETTINGS)
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(intent)
-                return false
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in toggleDoNotDisturb", e)
-            
-            // Fallback to opening sound settings
-            try {
-                val intent = Intent(Settings.ACTION_SOUND_SETTINGS)
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(intent)
-            } catch (e2: Exception) {
-                Log.e(TAG, "Failed to open sound settings: ${e2.message}")
-            }
-            
-            return false
-        }
-    }
-    
-    private fun togglePowerSaving(): Boolean {
-        try {
-            // Open battery saver settings
-            val intent = Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            context.startActivity(intent)
-            
-            // We can't directly toggle power saving mode without system app privileges
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in togglePowerSaving", e)
-            return false
-        }
-    }
-    
-    private fun toggleFlashlight(): Boolean {
-        try {
-            // Method 1: Try using CameraManager for devices with Android M and above
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                try {
-                    val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
-                    val cameraId = cameraManager.cameraIdList[0] // Usually the back camera
-                    
-                    // Get current torch state via reflection
-                    val getTorchModeMethod = cameraManager.javaClass.getDeclaredMethod("getTorchMode", String::class.java)
-                    val currentTorchMode = getTorchModeMethod.invoke(cameraManager, cameraId) as Boolean
-                    
-                    // Toggle torch mode
-                    cameraManager.setTorchMode(cameraId, !currentTorchMode)
-                    return true
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to toggle flashlight via CameraManager: ${e.message}")
-                }
-            }
-            
-            // Method 2: Open torch/flashlight app or quick settings
-            try {
-                // Try to open a common flashlight app
-                val packageManager = context.packageManager
-                val intent = packageManager.getLaunchIntentForPackage("com.motorola.flashlight") 
-                    ?: packageManager.getLaunchIntentForPackage("com.asus.flashlight")
-                    ?: packageManager.getLaunchIntentForPackage("com.oppo.flashlight")
-                    
-                if (intent != null) {
-                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    context.startActivity(intent)
-                    return true
-                } else {
-                    // If no flashlight app found, open quick settings
-                    return openQuickSettings()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open flashlight app: ${e.message}")
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in toggleFlashlight", e)
-            return false
-        }
     }
 } 

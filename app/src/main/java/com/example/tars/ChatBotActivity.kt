@@ -462,9 +462,13 @@ class ChatBotActivity : AppCompatActivity() {
                     
                     val errorMessage = when {
                         !isNetworkAvailable() -> "No internet connection. Please check your network and try again."
-                        e.message?.contains("API key", ignoreCase = true) == true -> "Invalid API key. Please update your Grok API key in settings."
-                        e.message?.contains("Too many requests", ignoreCase = true) == true -> "The server is busy. Please try again in a moment."
-                        else -> "I'm experiencing a technical issue. Please try again."
+                        e.message?.contains("Invalid API key", ignoreCase = true) == true -> "Invalid API key. Please update your Grok API key in settings."
+                        e.message?.contains("API key is not authorized", ignoreCase = true) == true -> "API key is not authorized. Please check your API key permissions."
+                        e.message?.contains("Rate limit exceeded", ignoreCase = true) == true -> "Rate limit exceeded. Please try again in a few moments."
+                        e.message?.contains("Server error", ignoreCase = true) == true -> "Server error. Please try again later."
+                        e.message?.contains("Empty response", ignoreCase = true) == true -> "No response received from server. Please try again."
+                        e.message?.contains("Invalid response format", ignoreCase = true) == true -> "Invalid response from server. Please try again."
+                        else -> "I'm experiencing a technical issue: ${e.message}. Please try again."
                     }
                     
                     messageAdapter.addMessage(Message(errorMessage, false, getCurrentTime()))
@@ -643,7 +647,7 @@ class ChatBotActivity : AppCompatActivity() {
 
     private fun setupAIProvider() {
         try {
-            val apiKey = Config.getGrokKey()
+            val apiKey = Config.getOpenRouterKey()
             if (apiKey.isNotEmpty()) {
                 aiProvider = GrokProvider(apiKey)
             } else {
@@ -865,6 +869,17 @@ class ChatBotActivity : AppCompatActivity() {
         val lowerInput = input.lowercase().trim()
         
         return when {
+            // App launching - check this first
+            lowerInput.startsWith("open ") || lowerInput.startsWith("launch ") || 
+            lowerInput.startsWith("start ") || lowerInput.startsWith("run ") -> {
+                val appName = extractAppName(lowerInput)
+                if (appName.isNotEmpty()) {
+                    phoneControlService.launchApp(appName)
+                } else {
+                    "Please specify which app to open"
+                }
+            }
+            
             // Volume controls
             lowerInput.contains("volume up") || lowerInput.contains("increase volume") || 
             lowerInput.contains("turn up volume") || lowerInput.contains("louder") -> {
@@ -915,17 +930,6 @@ class ChatBotActivity : AppCompatActivity() {
                 phoneControlService.toggleBluetooth(false)
             }
             
-            // App launching
-            lowerInput.startsWith("open ") || lowerInput.startsWith("launch ") || 
-            lowerInput.startsWith("start ") || lowerInput.startsWith("run ") -> {
-                val appName = extractAppName(lowerInput)
-                if (appName.isNotEmpty()) {
-                    phoneControlService.launchApp(appName)
-                } else {
-                    "Please specify which app to open"
-                }
-            }
-            
             // Settings navigation
             lowerInput.contains("open settings") || lowerInput.contains("go to settings") -> {
                 val settingType = extractSettingType(lowerInput)
@@ -935,51 +939,72 @@ class ChatBotActivity : AppCompatActivity() {
             // System navigation - Home screen
             lowerInput.contains("go home") || lowerInput.contains("home screen") || 
             lowerInput.contains("go to home") || lowerInput == "home" -> {
-                phoneControlService.performSystemAction("home")
+                val intent = Intent(Intent.ACTION_MAIN)
+                intent.addCategory(Intent.CATEGORY_HOME)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+                "Going to home screen"
             }
             
-            // System navigation - Back
+            // System navigation - Back (not easily supported without accessibility services)
             lowerInput.contains("go back") || lowerInput == "back" -> {
-                phoneControlService.performSystemAction("back")
+                // We can't easily trigger back button without accessibility services
+                // Just inform the user
+                "Sorry, I can't go back without special permissions"
             }
             
-            // System navigation - Recent apps
+            // System navigation - Recent apps (open app switcher if possible)
             lowerInput.contains("recent apps") || lowerInput.contains("show recent") || 
             lowerInput.contains("recents") || lowerInput.contains("recent tasks") -> {
-                phoneControlService.performSystemAction("recent apps")
+                try {
+                    val serviceIntent = Intent("com.android.systemui.TOGGLE_RECENTS")
+                    serviceIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    startActivity(serviceIntent)
+                    "Showing recent apps"
+                } catch (e: Exception) {
+                    "Sorry, I can't access recent apps on this device"
+                }
             }
             
-            // System navigation - Lock screen
+            // System navigation - Lock screen (open settings instead)
             lowerInput.contains("lock screen") || lowerInput.contains("lock phone") || 
             lowerInput.contains("lock device") || lowerInput == "lock" || 
             lowerInput.contains("turn off screen") || lowerInput.contains("sleep device") -> {
-                phoneControlService.performSystemAction("lock")
+                // We can't directly lock screen without device admin rights
+                phoneControlService.openSettings("security")
+                "Opening security settings. I cannot directly lock your screen without special permissions."
             }
             
-            // System navigation - Notifications
+            // System navigation - Notifications (open settings instead)
             lowerInput.contains("notifications") || lowerInput.contains("show notifications") || 
             lowerInput.contains("open notifications") || lowerInput.contains("pull down notifications") || 
             lowerInput.contains("check notifications") -> {
-                phoneControlService.performSystemAction("notifications")
+                val intent = Intent(Settings.ACTION_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+                "Opening settings where you can find notifications"
             }
             
-            // System navigation - Quick settings
+            // System navigation - Quick settings (open settings instead)
             lowerInput.contains("quick settings") || lowerInput.contains("show quick settings") || 
             lowerInput.contains("open quick settings") || lowerInput.contains("system settings") || 
             lowerInput.contains("toggles") || lowerInput.contains("quick panel") -> {
-                phoneControlService.performSystemAction("quick settings")
+                val intent = Intent(Settings.ACTION_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+                "Opening system settings"
             }
             
-            // Split screen
+            // Split screen (not easily supported without accessibility services)
             lowerInput.contains("split screen") || lowerInput.contains("multi window") || 
             lowerInput.contains("dual screen") -> {
-                phoneControlService.performSystemAction("split screen")
+                "Sorry, I can't activate split screen without special permissions"
             }
             
-            // Take screenshot
+            // Take screenshot (not easily supported without system permissions)
             lowerInput.contains("screenshot") || lowerInput.contains("take screenshot") || 
             lowerInput.contains("capture screen") || lowerInput.contains("screen capture") -> {
-                phoneControlService.performSystemAction("screenshot")
+                "Sorry, I can't take screenshots without special permissions"
             }
             
             // Open camera
@@ -988,22 +1013,29 @@ class ChatBotActivity : AppCompatActivity() {
                 phoneControlService.launchApp("camera")
             }
             
-            // Do not disturb mode
+            // Do not disturb mode (open settings instead)
             lowerInput.contains("do not disturb") || lowerInput.contains("silent mode") || 
             lowerInput.contains("mute notifications") -> {
-                phoneControlService.performSystemAction("do not disturb")
+                val intent = Intent(Settings.ACTION_SOUND_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+                "Opening sound settings where you can enable Do Not Disturb"
             }
             
-            // Power saving mode
+            // Power saving mode (open battery settings)
             lowerInput.contains("power saving") || lowerInput.contains("battery saver") || 
             lowerInput.contains("save battery") -> {
-                phoneControlService.performSystemAction("power saving")
+                val intent = Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+                "Opening battery settings where you can enable power saving"
             }
             
-            // Turn on flashlight/torch
+            // Turn on flashlight/torch (not easily supported without camera permissions)
             lowerInput.contains("flashlight") || lowerInput.contains("torch") || 
             lowerInput.contains("turn on light") -> {
-                phoneControlService.performSystemAction("flashlight")
+                phoneControlService.openSettings("display")
+                "Sorry, I can't directly control the flashlight without special permissions"
             }
             
             // If no phone control command matched
@@ -1012,20 +1044,17 @@ class ChatBotActivity : AppCompatActivity() {
     }
 
     private fun extractAppName(command: String): String {
-        val keywords = listOf("open", "launch", "start", "run")
-        var appName = command
+        // Remove command words
+        val keywords = listOf("open", "launch", "start", "run", "app", "application", "the")
+        var appName = command.lowercase()
         
-        for (keyword in keywords) {
-            appName = appName.replace(keyword, "").trim()
+        // Remove each keyword and clean up
+        keywords.forEach { keyword ->
+            appName = appName.replace(keyword, "")
         }
         
-        // Additional cleaning
-        val stopWords = listOf("the", "app", "application")
-        for (word in stopWords) {
-            appName = appName.replace(" $word", "").trim()
-        }
-        
-        return appName
+        // Clean up extra spaces and trim
+        return appName.replace("\\s+".toRegex(), " ").trim()
     }
 
     private fun extractSettingType(command: String): String {
